@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">WhatsApp Hybrid</string>
+    <string name="pairing_code_banner">Pairing code: %1$s\nOpen WhatsApp on your phone: Settings - Linked devices - Link with phone number</string>
+</resources>

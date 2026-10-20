@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.HybridWA" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0b141a</item>
+        <item name="android:statusBarColor">#008069</item>
+        <item name="android:navigationBarColor">#0b141a</item>
+        <item name="android:colorPrimary">#008069</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

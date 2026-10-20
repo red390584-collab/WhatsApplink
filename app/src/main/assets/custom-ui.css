@@ -1,0 +1,490 @@
+/*
+ * WhatsApp-style theme for the injected custom UI.
+ * Every rule is scoped under #wv-root so nothing leaks into (or is affected by)
+ * the official web.whatsapp.com stylesheet. The official UI is hidden by the
+ * hide rule that MainActivity prepends: body > *:not(#wv-root) { display:none }.
+ */
+
+#wv-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  background: #ffffff;
+  color: #111b21;
+  font-family: "Segoe UI", -apple-system, Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+}
+
+#wv-root,
+#wv-root * {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#wv-root [hidden] {
+  display: none !important;
+}
+
+#wv-root button {
+  font: inherit;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* ---------- shell ---------- */
+
+#wv-root .wa-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ---------- header ---------- */
+
+#wv-root .wa-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 56px;
+  padding: 0 10px;
+  padding-top: env(safe-area-inset-top);
+  background: #008069;
+  color: #ffffff;
+  flex: 0 0 auto;
+}
+
+#wv-root .wa-icon-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  flex: 0 0 auto;
+  transition: background-color 0.15s ease;
+}
+
+#wv-root .wa-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+#wv-root .wa-icon-btn:active {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+#wv-root .wa-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 6px 4px;
+}
+
+#wv-root .wa-title {
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-subtitle {
+  font-size: 12.5px;
+  color: #c4d4cd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---------- main / panes ---------- */
+
+#wv-root .wa-main {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #ffffff;
+}
+
+#wv-root .wa-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  animation: wa-fade 0.16s ease;
+}
+
+@keyframes wa-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---------- search ---------- */
+
+#wv-root .wa-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #f0f2f5;
+  padding: 7px 12px;
+}
+
+#wv-root .wa-search-icon {
+  color: #54656f;
+  flex: 0 0 auto;
+}
+
+#wv-root .wa-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14.5px;
+  color: #111b21;
+}
+
+#wv-root .wa-search input::placeholder {
+  color: #8696a0;
+}
+
+/* ---------- chat list ---------- */
+
+#wv-root .wa-chat-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background: #ffffff;
+  -webkit-overflow-scrolling: touch;
+}
+
+#wv-root .wa-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 10px 14px;
+  text-align: left;
+  transition: background-color 0.12s ease;
+}
+
+#wv-root .wa-row:hover {
+  background: #f5f6f6;
+}
+
+#wv-root .wa-row:active {
+  background: #ebedef;
+}
+
+#wv-root .wa-row + .wa-row .wa-row-mid {
+  border-top: 0;
+}
+
+#wv-root .wa-avatar {
+  flex: 0 0 auto;
+  width: 49px;
+  height: 49px;
+  border-radius: 50%;
+  background: #dfe5e7;
+  color: #ffffff;
+  font-size: 21px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  position: relative;
+  overflow: hidden;
+}
+
+#wv-root .wa-avatar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+#wv-root .wa-row-mid {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px solid #e9edef;
+}
+
+#wv-root .wa-row:last-child .wa-row-mid {
+  border-bottom: none;
+}
+
+#wv-root .wa-row-name {
+  font-size: 16.5px;
+  color: #111b21;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-row-unread .wa-row-name {
+  font-weight: 600;
+}
+
+#wv-root .wa-row-prev {
+  font-size: 13.5px;
+  color: #667781;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 18px;
+}
+
+#wv-root .wa-row-right {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+#wv-root .wa-row-time {
+  font-size: 12px;
+  color: #667781;
+  white-space: nowrap;
+}
+
+#wv-root .wa-row-unread .wa-row-time {
+  color: #25d366;
+  font-weight: 500;
+}
+
+#wv-root .wa-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: #25d366;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#wv-root .wa-empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: #667781;
+  font-size: 14.5px;
+}
+
+/* ---------- conversation ---------- */
+
+#wv-root .wa-messages {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px 0 14px;
+  background-color: #efeae2;
+  background-image: radial-gradient(rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+#wv-root .wa-day-sep {
+  display: flex;
+  justify-content: center;
+  margin: 10px 0;
+}
+
+#wv-root .wa-day-sep span {
+  background: rgba(255, 255, 255, 0.92);
+  color: #54656f;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  padding: 5px 12px;
+  border-radius: 8px;
+  box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+}
+
+#wv-root .wa-bubble {
+  position: relative;
+  max-width: 82%;
+  margin: 2px 12px;
+  padding: 6px 9px 8px 10px;
+  border-radius: 8px;
+  box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
+  font-size: 15px;
+  line-height: 20px;
+  color: #111b21;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+  animation: wa-fade 0.14s ease;
+}
+
+#wv-root .wa-in {
+  background: #ffffff;
+  margin-right: 12px;
+  border-top-left-radius: 0;
+}
+
+#wv-root .wa-in::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -8px;
+  width: 8px;
+  height: 13px;
+  background: #ffffff;
+  clip-path: polygon(100% 0, 0 0, 100% 100%);
+}
+
+#wv-root .wa-out {
+  background: #d9fdd3;
+  margin-left: auto;
+  border-top-right-radius: 0;
+}
+
+#wv-root .wa-out::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -8px;
+  width: 8px;
+  height: 13px;
+  background: #d9fdd3;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+#wv-root .wa-sender {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1f8f74;
+  margin-bottom: 2px;
+}
+
+#wv-root .wa-bubble-text {
+  white-space: pre-wrap;
+  display: inline;
+}
+
+#wv-root .wa-bubble-meta {
+  float: right;
+  margin: 6px -4px 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: #667781;
+  user-select: none;
+}
+
+#wv-root .wa-bubble.wa-failed .wa-bubble-time {
+  color: #c0392b;
+  font-weight: 600;
+}
+
+#wv-root .wa-media .wa-bubble-text {
+  font-style: italic;
+  color: #3b4a54;
+}
+
+/* ---------- composer ---------- */
+
+#wv-root .wa-composer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px 8px;
+  padding-bottom: calc(6px + env(safe-area-inset-bottom));
+  background: #f0f2f5;
+}
+
+#wv-root .wa-composer input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 110px;
+  border: none;
+  outline: none;
+  background: #ffffff;
+  border-radius: 22px;
+  padding: 11px 15px;
+  font-size: 15.5px;
+  color: #111b21;
+}
+
+#wv-root .wa-composer input::placeholder {
+  color: #8696a0;
+}
+
+#wv-root .wa-send {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #00a884;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+#wv-root .wa-send:hover {
+  background: #029b7b;
+}
+
+#wv-root .wa-send:active {
+  transform: scale(0.92);
+}
+
+/* ---------- toast ---------- */
+
+#wv-root .wa-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 88px;
+  transform: translateX(-50%);
+  max-width: 80%;
+  background: rgba(17, 27, 33, 0.92);
+  color: #ffffff;
+  font-size: 13px;
+  padding: 9px 16px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(11, 20, 26, 0.25);
+  z-index: 10;
+  text-align: center;
+  animation: wa-fade 0.15s ease;
+}
+
+/* ---------- scrollbars (desktop UA still applies on tablets) ---------- */
+
+#wv-root .wa-chat-list::-webkit-scrollbar,
+#wv-root .wa-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+#wv-root .wa-chat-list::-webkit-scrollbar-thumb,
+#wv-root .wa-messages::-webkit-scrollbar-thumb {
+  background: rgba(11, 20, 26, 0.2);
+  border-radius: 3px;
+}
