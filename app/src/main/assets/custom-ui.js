@@ -237,13 +237,15 @@
 
   function setAvatarImg(node, url) {
     if (!node || !url) { return; }
-    var img = node.querySelector('img');
+    // Waiters are either an avatar wrapper <span> or a bare <img> (chat header).
+    var img = (node.tagName === 'IMG') ? node : node.querySelector('img');
     if (!img) {
       img = document.createElement('img');
       img.alt = '';
       node.appendChild(img);
     }
-    img.onerror = function () { img.remove(); };
+    img.onerror = function () { img.hidden = true; };
+    img.hidden = false;
     img.src = url;
   }
 
@@ -261,7 +263,16 @@
       avatarCache[id] = null;
       return;
     }
-    if (known === 'pending') { return; }
+    if (known === 'pending') {
+      // A row already started the fetch: subscribe to its result instead of refetching.
+      // The shim only hands back the <img> while this chat is still the open one.
+      (avatarWaiters[id] = avatarWaiters[id] || []).push({
+        isConnected: true,
+        tagName: 'SPAN',
+        querySelector: function () { return openChatId === id ? img : null; }
+      });
+      return;
+    }
     avatarCache[id] = 'pending';
     Promise.resolve()
       .then(function () { return api.getProfilePictureUrl(id, false); })
@@ -269,9 +280,7 @@
         avatarCache[id] = url || null;
         var node = $('hdr-avatar-img');
         if (!url || !node || openChatId !== id) { return; }
-        node.onerror = function () { node.hidden = true; };
-        node.src = url;
-        node.hidden = false;
+        setAvatarImg(node, url);
       })
       .catch(function () { avatarCache[id] = null; });
   }
@@ -291,6 +300,9 @@
       return;
     }
     avatarCache[id] = 'pending';
+    // The node that started the fetch is a waiter too, otherwise the very first
+    // render would never receive the picture it asked for.
+    (avatarWaiters[id] = avatarWaiters[id] || []).push(node);
     Promise.resolve()
       .then(function () { return api.getProfilePictureUrl(id, false); })
       .then(function (url) {
