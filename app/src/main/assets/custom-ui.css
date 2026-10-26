@@ -6,7 +6,9 @@
  */
 
 #wv-root {
-  /* palette (WhatsApp mobile, light) */
+  /* ---------- palette: LIGHT (default) ----------
+     Slightly toned-down WhatsApp light: warm panels instead of pure white so the
+     screen is not glaring. The dark theme overrides these under [data-theme="dark"]. */
   --wa-green: #00a884;
   --wa-green-dark: #008069;
   --wa-green-tint: #25d366;
@@ -14,13 +16,19 @@
   --wa-ink-soft: #3b4a54;
   --wa-muted: #667781;
   --wa-hint: #8696a0;
-  --wa-line: #e9edef;
-  --wa-panel: #ffffff;
-  --wa-rail: #f0f2f5;
-  --wa-wall: #efeae2;
+  --wa-line: #e4ded6;
+  --wa-panel: #faf7f2;
+  --wa-rail: #efeae3;
+  --wa-header: #008069;
+  --wa-hdr-sub: #d3eee6;
+  --wa-wall: #eae3d8;
   --wa-in: #ffffff;
   --wa-out: #d9fdd3;
+  --wa-quote: #f0ebe4;
+  --wa-press: #eae4dc;
   --wa-tick-read: #53bdeb;
+  --wa-doodle-stroke: #0b141a;
+  --wa-doodle-opacity: 0.055;
 
   position: fixed;
   inset: 0;
@@ -34,6 +42,38 @@
   -webkit-text-size-adjust: 100%;
   overscroll-behavior: none;
 }
+
+/* ---------- palette: DARK ---------- */
+#wv-root[data-theme="dark"] {
+  --wa-green: #00a884;
+  --wa-green-dark: #00796b;
+  --wa-green-tint: #25d366;
+  --wa-ink: #e9edef;
+  --wa-ink-soft: #d1d7db;
+  --wa-muted: #8696a0;
+  --wa-hint: #7d8e98;
+  --wa-line: #22323b;
+  --wa-panel: #111b21;
+  --wa-rail: #1b262d;
+  --wa-header: #1f2c34;
+  --wa-hdr-sub: #8696a0;
+  --wa-wall: #0b141a;
+  --wa-in: #202c33;
+  --wa-out: #005c4b;
+  --wa-quote: #182229;
+  --wa-press: #22323b;
+  --wa-tick-read: #53bdeb;
+  --wa-doodle-stroke: #ffffff;
+  --wa-doodle-opacity: 0.045;
+}
+
+/* ---------- wallpaper choices (WhatsApp: default / bright / dim / monochrome) ---------- */
+#wv-root[data-wall="bright"] { --wa-wall: #f4f5f1; }
+#wv-root[data-wall="dim"]    { --wa-wall: #d9d3c9; }
+#wv-root[data-wall="mono"]   { --wa-wall: #d7d7d7; }
+#wv-root[data-theme="dark"][data-wall="bright"] { --wa-wall: #16242b; }
+#wv-root[data-theme="dark"][data-wall="dim"]    { --wa-wall: #05090c; }
+#wv-root[data-theme="dark"][data-wall="mono"]   { --wa-wall: #1d1d1d; }
 
 #wv-root,
 #wv-root * {
@@ -80,7 +120,7 @@
   min-height: 56px;
   padding: 0 6px 0 4px;
   padding-top: env(safe-area-inset-top);
-  background: var(--wa-green-dark);
+  background: var(--wa-header);
   color: #ffffff;
   flex: 0 0 auto;
   box-shadow: 0 1px 3px rgba(11, 20, 26, 0.18);
@@ -153,7 +193,7 @@
 
 #wv-root .wa-hdr-sub {
   font-size: 12.5px;
-  color: #d3eee6;
+  color: var(--wa-hdr-sub);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -244,7 +284,7 @@
 }
 
 #wv-root .wa-row:active {
-  background: #f0f2f5;
+  background: var(--wa-press);
 }
 
 #wv-root .wa-row-mid {
@@ -497,8 +537,8 @@
 }
 
 #wv-root .wa-day-sep span {
-  background: #ffffff;
-  color: #54656f;
+  background: var(--wa-in);
+  color: var(--wa-muted);
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.25px;
@@ -509,8 +549,13 @@
 
 #wv-root .wa-bubble {
   position: relative;
+  /* shrink-wrap the bubble so outgoing sits tight on the right and incoming on the
+     left, instead of every bubble stretching to the full thread width */
+  width: -webkit-fit-content;
+  width: fit-content;
   max-width: 80%;
   margin: 8px 12px 0;
+  touch-action: pan-y;
   padding: 6px 9px 6px 9px;
   border-radius: 8px;
   box-shadow: 0 1px 0.5px rgba(11, 20, 26, 0.13);
@@ -530,6 +575,16 @@
 
 #wv-root .wa-bubble.wa-run {
   margin-top: 2px;
+}
+
+/* swipe-to-reply gesture state */
+#wv-root .wa-bubble.wa-swiping {
+  transition: none;
+}
+
+#wv-root .wa-bubble.wa-swipe-back {
+  transition: transform 0.16s ease;
+  transform: translateX(0) !important;
 }
 
 #wv-root .wa-in {
@@ -641,7 +696,7 @@
   width: 42px;
   height: 42px;
   border-radius: 50%;
-  background: #ffffff;
+  background: var(--wa-panel);
   color: var(--wa-muted);
   display: flex;
   align-items: center;
@@ -667,7 +722,7 @@
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  background: #ffffff;
+  background: var(--wa-in);
   border-radius: 24px;
   padding: 0 4px;
   box-shadow: 0 1px 1px rgba(11, 20, 26, 0.06);
@@ -723,7 +778,7 @@
   right: 0;
   bottom: 0;
   z-index: 21;
-  background: #ffffff;
+  background: var(--wa-panel);
   border-radius: 16px 16px 0 0;
   padding: 6px 0 calc(8px + env(safe-area-inset-bottom));
   box-shadow: 0 -4px 18px rgba(11, 20, 26, 0.25);
@@ -733,6 +788,15 @@
 @keyframes wa-sheet-in {
   from { transform: translateY(18px); opacity: 0.6; }
   to { transform: none; opacity: 1; }
+}
+
+#wv-root .wa-sheet-title {
+  padding: 12px 22px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--wa-muted);
 }
 
 #wv-root .wa-sheet-preview {
@@ -765,7 +829,7 @@
 }
 
 #wv-root .wa-sheet-btn:active {
-  background: #f0f2f5;
+  background: var(--wa-press);
 }
 
 #wv-root .wa-sheet-btn svg {
@@ -795,12 +859,481 @@
 /* ---------- scrollbars ---------- */
 
 #wv-root .wa-list::-webkit-scrollbar,
-#wv-root .wa-thread::-webkit-scrollbar {
-  width: 6px;
-}
-
+#wv-root .wa-thread::-webkit-scrollbar,
+#wv-root .wa-scroll-inner::-webkit-scrollbar,
 #wv-root .wa-list::-webkit-scrollbar-thumb,
-#wv-root .wa-thread::-webkit-scrollbar-thumb {
+#wv-root .wa-thread::-webkit-scrollbar-thumb,
+#wv-root .wa-scroll-inner::-webkit-scrollbar-thumb {
+  width: 6px;
   background: rgba(11, 20, 26, 0.18);
   border-radius: 3px;
 }
+
+/* the doodle wallpaper follows the theme instead of staying black */
+#wv-root .wa-doodle svg g {
+  stroke: var(--wa-doodle-stroke);
+  stroke-opacity: var(--wa-doodle-opacity);
+}
+
+/* ====================================================================== */
+/* status row (top of the chat list)                                      */
+/* ====================================================================== */
+
+#wv-root .wa-statusrow {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  width: 100%;
+  padding: 8px 13px;
+  min-height: 64px;
+  text-align: left;
+  flex: 0 0 auto;
+  background: var(--wa-panel);
+  border-bottom: 1px solid var(--wa-line);
+  transition: background-color 0.12s ease;
+}
+
+#wv-root .wa-statusrow:active {
+  background: var(--wa-press);
+}
+
+#wv-root .wa-statusrow .wa-row-mid {
+  border-bottom: none;
+  padding: 6px 0;
+}
+
+#wv-root .wa-statusrow-ring {
+  flex: 0 0 auto;
+  width: 49px;
+  height: 49px;
+  border-radius: 50%;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: conic-gradient(var(--wa-green) 0 75%, var(--wa-line) 0 100%);
+}
+
+#wv-root .wa-statusrow-ring[data-empty="1"] {
+  background: var(--wa-line);
+}
+
+#wv-root .wa-statusrow-ring .wa-avatar {
+  width: 41px;
+  height: 41px;
+  font-size: 17px;
+}
+
+#wv-root .wa-row-chev {
+  flex: 0 0 auto;
+  color: var(--wa-muted);
+}
+
+/* ====================================================================== */
+/* reply (swipe) bar + quoted block inside a bubble                         */
+/* ====================================================================== */
+
+#wv-root .wa-replybar {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 6px 7px 12px;
+  background: var(--wa-rail);
+  border-top: 1px solid var(--wa-line);
+  animation: wa-fade 0.14s ease;
+}
+
+#wv-root .wa-replybar-bar {
+  width: 4px;
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--wa-green);
+  flex: 0 0 auto;
+}
+
+#wv-root .wa-replybar-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+#wv-root .wa-replybar-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--wa-green);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-replybar-body {
+  font-size: 13px;
+  color: var(--wa-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-quote {
+  position: relative;
+  display: block;
+  margin-bottom: 4px;
+  padding: 5px 8px 5px 10px;
+  background: var(--wa-quote);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+#wv-root .wa-quote::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--wa-green);
+}
+
+#wv-root .wa-quote-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--wa-green);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-quote-body {
+  font-size: 13.5px;
+  color: var(--wa-ink-soft);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+/* ====================================================================== */
+/* scrollable panes (settings / contact info)                              */
+/* ====================================================================== */
+
+#wv-root .wa-scrollpane {
+  background: var(--wa-panel);
+}
+
+#wv-root .wa-scroll-inner {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 14px calc(24px + env(safe-area-inset-bottom));
+}
+
+#wv-root .wa-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 14px;
+  background: var(--wa-rail);
+  margin-bottom: 6px;
+}
+
+#wv-root .wa-card-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+#wv-root .wa-card-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--wa-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-card-sub {
+  font-size: 13.5px;
+  color: var(--wa-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-avatar-lg {
+  width: 64px;
+  height: 64px;
+  font-size: 26px;
+}
+
+#wv-root .wa-avatar-sm {
+  width: 34px;
+  height: 34px;
+  font-size: 14px;
+}
+
+#wv-root .wa-section-title {
+  margin: 18px 4px 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--wa-green);
+}
+
+#wv-root .wa-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#wv-root .wa-chip {
+  padding: 9px 16px;
+  border-radius: 20px;
+  background: var(--wa-rail);
+  color: var(--wa-ink-soft);
+  font-size: 14px;
+  font-weight: 500;
+  border: 1px solid transparent;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+#wv-root .wa-chip:active {
+  background: var(--wa-press);
+}
+
+#wv-root .wa-chip.wa-chip-on {
+  background: var(--wa-green);
+  border-color: var(--wa-green);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+#wv-root .wa-row-action {
+  background: var(--wa-rail);
+  border-radius: 12px;
+  padding: 10px 12px;
+  min-height: 64px;
+  border-bottom: none;
+  margin-bottom: 4px;
+}
+
+#wv-root .wa-row-action:active {
+  background: var(--wa-press);
+}
+
+#wv-root .wa-row-action .wa-row-mid {
+  border-bottom: none;
+  padding: 6px 0;
+}
+
+#wv-root .wa-row-icon {
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--wa-panel);
+  color: var(--wa-green);
+}
+
+#wv-root .wa-about {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--wa-muted);
+  padding: 0 4px 10px;
+}
+
+/* contact / group info */
+
+#wv-root .wa-info-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 12px 20px;
+  text-align: center;
+}
+
+#wv-root .wa-info-name {
+  font-size: 21px;
+  font-weight: 600;
+  color: var(--wa-ink);
+}
+
+#wv-root .wa-info-sub {
+  font-size: 14px;
+  color: var(--wa-muted);
+}
+
+#wv-root .wa-info-block {
+  background: var(--wa-rail);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+
+#wv-root .wa-info-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--wa-green);
+  margin-bottom: 3px;
+}
+
+#wv-root .wa-info-value {
+  font-size: 15px;
+  color: var(--wa-ink);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+#wv-root .wa-member {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 2px;
+}
+
+#wv-root .wa-member-name {
+  font-size: 15px;
+  color: var(--wa-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-member-sub {
+  font-size: 12.5px;
+  color: var(--wa-muted);
+}
+
+/* ====================================================================== */
+/* status viewer (full screen)                                              */
+/* ====================================================================== */
+
+#wv-root .wa-viewer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  background: #0b141a;
+  display: flex;
+  flex-direction: column;
+  animation: wa-fade 0.16s ease;
+}
+
+#wv-root .wa-viewer-bars {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 4px;
+  padding-top: calc(8px + env(safe-area-inset-top));
+  flex: 0 0 auto;
+}
+
+#wv-root .wa-viewer-bar {
+  flex: 1 1 auto;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.28);
+  overflow: hidden;
+}
+
+#wv-root .wa-viewer-bar > span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #ffffff;
+}
+
+#wv-root .wa-viewer-bar.wa-done > span { width: 100%; }
+#wv-root .wa-viewer-bar.wa-active > span { width: 100%; transition: width linear; }
+
+#wv-root .wa-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 8px;
+  flex: 0 0 auto;
+  color: #ffffff;
+}
+
+#wv-root .wa-viewer-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#wv-root .wa-viewer-name {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#wv-root .wa-viewer-time {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+#wv-root .wa-viewer-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 12px;
+}
+
+#wv-root .wa-viewer-stage img,
+#wv-root .wa-viewer-stage video {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 6px;
+  object-fit: contain;
+  background: #000000;
+}
+
+#wv-root .wa-viewer-text {
+  max-width: 92%;
+  padding: 26px 22px;
+  border-radius: 12px;
+  font-size: 21px;
+  line-height: 1.45;
+  text-align: center;
+  color: #ffffff;
+  background: linear-gradient(135deg, #00a884, #075e54);
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+#wv-root .wa-viewer-note {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 14.5px;
+  text-align: center;
+  padding: 20px;
+  line-height: 1.6;
+}
+
+#wv-root .wa-viewer-tap {
+  position: absolute;
+  top: 70px;
+  bottom: 0;
+  width: 34%;
+  z-index: 2;
+  background: transparent;
+}
+
+#wv-root .wa-viewer-prev { left: 0; }
+#wv-root .wa-viewer-next { right: 0; }

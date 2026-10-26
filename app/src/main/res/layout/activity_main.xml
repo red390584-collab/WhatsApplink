@@ -31,6 +31,28 @@
         android:textSize="15sp"
         android:visibility="gone" />
 
+    <!--
+        Shown only while the official WhatsApp Web UI is in front (Settings / profile /
+        status escape hatch). Tapping it hides the official page again and brings the
+        custom chat UI back.
+    -->
+    <TextView
+        android:id="@+id/btnBackToApp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="20dp"
+        android:background="@drawable/bg_pairing_code"
+        android:clickable="true"
+        android:elevation="8dp"
+        android:focusable="true"
+        android:padding="14dp"
+        android:text="@string/back_to_chats"
+        android:textColor="#ffffff"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
     <!-- Main-frame load failure: without this a network error just leaves a black screen. -->
     <TextView
         android:id="@+id/errorView"

@@ -172,6 +172,16 @@ class MainActivity : Activity() {
   }
 
   function check() {
+    if (window.__wvHold) {
+      // The official WhatsApp Web UI is in front on purpose (the user opened its
+      // settings / profile). Never re-mount or re-hide it - only watch for a real
+      // unlink so the app can fall back to the linking screen.
+      if (linked) {
+        paneMisses++;
+        if (paneMisses >= 8 && !engineAuthenticated()) { askUnlink('session ended'); }
+      }
+      return;
+    }
     if (isLinked()) {
       paneMisses = 0;
       if (!linked) {
@@ -235,10 +245,17 @@ class MainActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var codeBanner: TextView
     private lateinit var errorView: TextView
+    private lateinit var backToApp: TextView
     private var lastPairingCode: String? = null
 
-    /** "web" while the official UI is in front, "list"/"chat" once our UI drives it. */
+    /** "web" while the official UI is in front, "list"/"chat"/"pane" once our UI drives it. */
     private var uiState: String = "web"
+
+    /** True while the official WhatsApp Web page is deliberately shown (Settings escape hatch). */
+    private var officialMode = false
+
+    /** Which of our panes was in front before the official page was opened. */
+    private var uiStateBeforeOfficial: String = "list"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -246,6 +263,10 @@ class MainActivity : Activity() {
         webView = findViewById(R.id.webView)
         codeBanner = findViewById(R.id.codeBanner)
         errorView = findViewById(R.id.errorView)
+        backToApp = findViewById(R.id.btnBackToApp)
+
+        // Return from the official WhatsApp Web UI to the custom chat UI.
+        backToApp.setOnClickListener { backToCustomUi() }
 
         // CRITICAL: cookies keep the WhatsApp Web session alive across restarts.
         val cookieManager = CookieManager.getInstance()
@@ -294,6 +315,8 @@ class MainActivity : Activity() {
                 super.onPageStarted(view, url, favicon)
                 if (url != null && url.startsWith("http")) {
                     uiState = "web"
+                    officialMode = false
+                    backToApp.visibility = View.GONE
                     errorView.visibility = View.GONE
                 }
             }
@@ -404,6 +427,14 @@ class MainActivity : Activity() {
             "    var root = document.createElement('div');\n" +
             "    root.id = 'wv-root';\n" +
             "    root.innerHTML = " + JSONObject.quote(html) + ";\n" +
+            "    try {\n" +
+            "      var t = window.localStorage.getItem('wv.theme');\n" +
+            "      var w = window.localStorage.getItem('wv.wall');\n" +
+            "      var dark = (t === 'dark') || (!t && window.matchMedia && " +
+            "window.matchMedia('(prefers-color-scheme: dark)').matches);\n" +
+            "      root.setAttribute('data-theme', dark ? 'dark' : 'light');\n" +
+            "      root.setAttribute('data-wall', w || 'default');\n" +
+            "    } catch (e2) {}\n" +
             "    document.body.appendChild(root);\n" +
             "  } catch (e) { if (window.Android) { try { Android.log('mount: ' + e); } catch (x) {} } }" +
             "})();"
@@ -416,8 +447,19 @@ class MainActivity : Activity() {
             "\n  } catch (e) { if (window.Android) { try { Android.log('ui: ' + e); } catch (x) {} } }" +
             "})();"
 
-        webView.evaluateJavascript(mountScript, null)
-        webView.evaluateJavascript(uiScript, null)
+        webView.evaluateJavascript(mountScript) {
+            if (isFinishing || isDestroyed) return@evaluateJavascript
+            webView.evaluateJavascript(uiScript) {
+                if (isFinishing || isDestroyed) return@evaluateJavascript
+                // If this DOM was rebuilt after the official UI was shown, the listeners
+                // of the previous #wv-root died with it: let the still-alive CustomUI
+                // re-bind itself to the fresh nodes (it is a no-op on a normal mount).
+                webView.evaluateJavascript(
+                    "(function () { try { if (window.CustomUI && CustomUI.remount) { CustomUI.remount(); } } catch (e) {} })();",
+                    null
+                )
+            }
+        }
     }
 
     /** Undo the overlay + hide rule so the official UI is visible/usable again. */
@@ -468,6 +510,16 @@ class MainActivity : Activity() {
         }
 
         /**
+         * The custom UI asked for the official WhatsApp Web page (its settings,
+         * profile, privacy and status screens). The overlay is only hidden - never
+         * removed - so the WhatsApp engine and our UI state both stay intact.
+         */
+        @JavascriptInterface
+        fun openOfficialUi() {
+            runOnUiThread { showOfficialUi() }
+        }
+
+        /**
          * The linked device was logged out / the session expired. Drop our overlay and
          * go back to the official linking screen instead of showing a dead chat list.
          */
@@ -476,6 +528,8 @@ class MainActivity : Activity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 uiState = "web"
+                officialMode = false
+                backToApp.visibility = View.GONE
                 lastPairingCode = null
                 codeBanner.visibility = View.GONE
                 removeCustomUi()
@@ -540,7 +594,7 @@ class MainActivity : Activity() {
         /** Custom UI reports which pane is in front so hardware-back can be routed. */
         @JavascriptInterface
         fun onUiState(state: String?) {
-            if (state == "list" || state == "chat") {
+            if (state == "list" || state == "chat" || state == "pane" || state == "web") {
                 uiState = state
             }
         }
@@ -555,13 +609,86 @@ class MainActivity : Activity() {
     // Lifecycle / back handling
     // ---------------------------------------------------------------------
 
+    /**
+     * Show the untouched official WhatsApp Web UI on top of our (still mounted, but
+     * hidden) overlay so its settings, profile and status screens stay reachable.
+     */
+    private fun showOfficialUi() {
+        if (isFinishing || isDestroyed) return
+        if (!officialMode) {
+            uiStateBeforeOfficial = if (uiState == "web") "list" else uiState
+            officialMode = true
+            uiState = "web"
+            backToApp.visibility = View.VISIBLE
+        }
+        // One rule, one element: only #wv-root is hidden, everything else stays as it was.
+        val script =                "(function () {\n" +
+                "  try {\n" +
+                "    var s = document.getElementById('wv-style');\n" +
+                "    var r = document.getElementById('wv-root');\n" +
+                "    if (!s || !r) { return false; }\n" +
+                "    window.__wvHold = true;\n" +
+                "    s.textContent = " +
+                JSONObject.quote("#wv-root { display: none !important; }") + ";\n" +
+                "    return true;\n" +
+                "  } catch (e) { return false; }\n" +
+                "})();"
+        webView.evaluateJavascript(script) { result ->
+            if (isFinishing || isDestroyed) return@evaluateJavascript
+            if (result != "true") {
+                // Style element gone (page re-rendered): load the official page normally.
+                officialMode = false
+                backToApp.visibility = View.GONE
+                uiState = "web"
+                webView.loadUrl(HOME_URL)
+            }
+        }
+    }
+
+    /** Put the custom chat UI back in front after the official page was used. */
+    private fun backToCustomUi() {
+        if (isFinishing || isDestroyed) return
+        officialMode = false
+        backToApp.visibility = View.GONE
+        val probe =
+            "(function () { try { window.__wvHold = false; } catch (e) {} " +
+                "return !!(document.getElementById('wv-root') && document.getElementById('wv-style')); })();"
+        webView.evaluateJavascript(probe) { result ->
+            if (isFinishing || isDestroyed) return@evaluateJavascript
+            if (result != "true") {
+                injectCustomUI()
+                return@evaluateJavascript
+            }
+            val css = cachedCss ?: readAsset("custom-ui.css").also { cachedCss = it }
+            val fullCss = "body > *:not(#wv-root) { display: none !important; }\n" + css
+            val restore =
+                "(function () {\n" +
+                    "  try {\n" +
+                    "    var s = document.getElementById('wv-style');\n" +
+                    "    if (s) { s.textContent = " + JSONObject.quote(fullCss) + "; }\n" +
+                    "    if (window.CustomUI && CustomUI.resume) { CustomUI.resume(); }\n" +
+                    "  } catch (e) {}\n" +
+                    "})();"
+            webView.evaluateJavascript(restore, null)
+            uiState = when (uiStateBeforeOfficial) {
+                "chat", "pane" -> uiStateBeforeOfficial
+                else -> "list"
+            }
+        }
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (officialMode) {
+                // The official page is in front: back returns to our chat UI.
+                backToCustomUi()
+                return true
+            }
             when (uiState) {
-                "chat" -> {
-                    // Close the conversation (or a sheet) inside our UI instead of leaving.
+                "chat", "pane" -> {
+                    // Close a sheet / viewer / sub-pane / conversation inside our UI.
                     webView.evaluateJavascript(
-                        "(function () { try { if (window.CustomUI && CustomUI.handleBack) { return CustomUI.handleBack() ? '1' : '0'; } if (window.CustomUI && CustomUI.closeChat) { return CustomUI.closeChat() ? '1' : '0'; } } catch (e) {} return '0'; })();",
+                        "(function () { try { if (window.CustomUI && CustomUI.handleBack) { return CustomUI.handleBack() ? '1' : '0'; } } catch (e) {} return '0'; })();",
                         null
                     )
                     return true

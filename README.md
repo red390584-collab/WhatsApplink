@@ -21,6 +21,35 @@ A hybrid WhatsApp client:
    injected on top, driven by `WPP.chat.list()`, `WPP.chat.getMessages()`,
    `WPP.chat.sendTextMessage()`, `WPP.on('chat.new_message')`,
    `WPP.on('chat.msg_ack_change')` and `WPP.on('chat.unread_count_changed')`.
+5. The overlay can be **handed back to the official page** at any time (menu → *Open
+   WhatsApp Web*) so the real WhatsApp settings, profile, privacy and linked-device
+   screens stay reachable; a native *Back to chats* button returns to the custom UI.
+   The engine keeps running underneath, so no session is lost in either direction.
+
+### What the custom UI does
+
+- **Themes** — Light / Dark / **System** plus a chat wallpaper choice (Default, Bright,
+  Dim, Monochrome), stored in `localStorage` and applied to `#wv-root[data-theme]`
+  before first paint so a dark-mode device never flashes white.
+- **Conversation** — outgoing bubbles on the right, incoming on the left (bubbles
+  shrink-wrap their content), day separators, group sender names, delivery ticks with
+  live `msg_ack_change` updates and unread badges.
+- **Swipe to reply** — dragging a bubble right (or *Reply* in the long-press sheet) puts
+  a quoted preview over the composer; the message is sent with
+  `WPP.chat.sendTextMessage(id, text, { quotedMsg: key })` and falls back to a plain
+  send if the engine refuses the quote. Quoted blocks inside bubbles are hydrated with
+  `WPP.chat.getQuotedMsg()`.
+- **Status** — a Status row on the chat list plus a Status pane and a full-screen
+  viewer (segmented progress bars, tap left/right to navigate, auto-advance) built from
+  `WPP.whatsapp.StatusV3Store` with a `status@broadcast` fallback; media is fetched with
+  `WPP.chat.downloadMedia()` and read receipts are sent with `WPP.status.sendReadStatus()`.
+- **Settings** — theme/wallpaper pickers, my profile (name, number, about, picture via
+  `WPP.profile`) and the *WhatsApp Web settings* escape hatch.
+- **Contact / group info** — opened from the chat header: phone number, about text from
+  `WPP.contact.getStatus()` and the participant list from `WPP.group.getParticipants()`.
+- **No twin bubbles** — a sent message shows exactly once: the optimistic bubble is
+  *adopted* by the engine's own echo, whether that echo arrives before the send promise
+  resolves, under a different id form (`@c.us` vs `@lid`), or re-keyed by the server.
 
 Conversations are read from every source the engine offers — `WPP.chat.getMessages()`
 (anchored, then unanchored, on both the `@c.us` and `@lid` id of the chat) and the live
