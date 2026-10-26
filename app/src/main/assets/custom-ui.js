@@ -5,20 +5,25 @@
  * WhatsApp engine keeps running) and talks to the engine through the WPPConnect
  * (wa-js 4.3.0) bridge:
  *
- *   WPP.chat.list()                              -> populate the chat list
- *   WPP.chat.getMessages(chatId, {count: 40})    -> render a conversation
- *   WPP.chat.sendTextMessage(chatId, text)       -> send from the composer
- *   WPP.chat.markIsRead(chatId)                  -> clear unread state
- *   WPP.on('chat.new_message', ...)              -> live incoming/outgoing messages
- *   WPP.on('chat.unread_count_changed', ...)     -> live unread badges
+ *   WPP.chat.list()                                    -> populate the chat list
+ *   WPP.chat.getMessages(chatId, {count: 40})          -> render a conversation
+ *   WPP.chat.sendTextMessage(chatId, text)             -> send from the composer
+ *   WPP.chat.markIsRead(chatId)                        -> clear unread state
+ *   WPP.contact.list()                                 -> "new chat" picker
+ *   WPP.contact.getProfilePictureUrl(chatId, false)    -> avatars
+ *   WPP.on('chat.new_message', ...)                    -> live incoming/outgoing
+ *   WPP.on('chat.unread_count_changed', ...)           -> live unread badges
  *
- * MainActivity wraps this file in a try/catch before evaluating it.
+ * MainActivity wraps this file in a try/catch before evaluating it, and evaluates it at
+ * most once per document.
  */
 (function () {
   'use strict';
 
+  if (window.CustomUI) { return; }
+
   // ---------------------------------------------------------------------
-  // tiny helpers
+  // helpers
   // ---------------------------------------------------------------------
 
   function $(id) { return document.getElementById(id); }
@@ -33,7 +38,7 @@
     el.textContent = msg;
     el.hidden = false;
     clearTimeout(toast._t);
-    toast._t = setTimeout(function () { el.hidden = true; }, ms || 2600);
+    toast._t = setTimeout(function () { el.hidden = true; }, ms || 2400);
   }
 
   function idStr(x) {
@@ -47,11 +52,33 @@
     return String(jid || '').split('@')[0].split(':')[0].replace(/^\+/, '');
   }
 
+  function isGroupId(id) { return /@g\.us$/.test(String(id || '')); }
+
   function wpp() { return window.WPP || null; }
 
   function chatApi() {
     var w = wpp();
     return (w && w.chat) ? w.chat : null;
+  }
+
+  function contactApi() {
+    var w = wpp();
+    return (w && w.contact) ? w.contact : null;
+  }
+
+  var ICONS = {
+    tick: '<svg viewBox="0 0 20 14" width="16" height="12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M1 8.2 4.3 11.5 12.6 3"/></svg>',
+    tick2: '<svg viewBox="0 0 20 14" width="18" height="12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M1 8.2 4.3 11.5 12.6 3"/><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M7.3 8.2 10.6 11.5 18.9 3"/></svg>',
+    clock: '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="6.1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.7V8l2.3 1.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+    pin: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M14.5 2h5v2h-1.2l2.2 6.1-3.6 3.6H13v6.1l-1 1.2-1-1.2V13.7H7.1L3.5 10.1 5.7 4H4.5V2h10z"/></svg>'
+  };
+
+  /** Static-markup icon element (never built from user data). */
+  function icon(name, cls) {
+    var span = document.createElement('span');
+    span.className = 'wa-tick' + (cls ? ' ' + cls : '');
+    span.innerHTML = ICONS[name] || '';
+    return span;
   }
 
   // ---------------------------------------------------------------------
@@ -66,6 +93,13 @@
   var seenMsgKeys = Object.create(null);
   var loadAttempts = 0;
   var softRefreshTimer = null;
+  var pendingSends = [];
+  var locallyRead = Object.create(null); // id -> true while the engine still reports unread
+  var sheetText = '';
+  var view = 'list'; // 'list' | 'chat' | 'contacts'
+
+  var avatarCache = Object.create(null);   // id -> url | null | 'pending'
+  var avatarWaiters = Object.create(null); // id -> [nodes]
 
   var AVATAR_COLORS = [
     '#00a884', '#1f8f74', '#2563a6', '#6b4fa8',
@@ -74,9 +108,7 @@
 
   function avatarColor(id) {
     var h = 0;
-    for (var i = 0; i < id.length; i++) {
-      h = (h * 31 + id.charCodeAt(i)) >>> 0;
-    }
+    for (var i = 0; i < id.length; i++) { h = (h * 31 + id.charCodeAt(i)) >>> 0; }
     return AVATAR_COLORS[h % AVATAR_COLORS.length];
   }
 
@@ -163,11 +195,13 @@
       name: c.name || c.formattedTitle ||
         (c.contact && (c.contact.pushname || c.contact.name || c.contact.formattedName)) ||
         userOf(id) || 'Unknown',
-      isGroup: !!c.isGroup || /@g\.us$/.test(id),
+      isGroup: !!c.isGroup || isGroupId(id),
       unread: c.unreadCount || 0,
       pinned: !!c.pinned,
       ts: c.t || (lm && (lm.t || lm.timestamp)) || 0,
       preview: previewOf(lm),
+      lastFromMe: !!(lm && lm.fromMe),
+      lastAck: lm ? lm.ack : undefined,
       obj: c
     };
   }
@@ -185,6 +219,7 @@
       text: msgText(m),
       ts: m.t || m.timestamp || Math.floor(Date.now() / 1000),
       type: m.type || 'chat',
+      ack: (typeof m.ack === 'number') ? m.ack : undefined,
       sender: m.author || m.from || m.to || ''
     };
   }
@@ -197,12 +232,135 @@
   }
 
   // ---------------------------------------------------------------------
+  // avatars
+  // ---------------------------------------------------------------------
+
+  function setAvatarImg(node, url) {
+    if (!node || !url) { return; }
+    var img = node.querySelector('img');
+    if (!img) {
+      img = document.createElement('img');
+      img.alt = '';
+      node.appendChild(img);
+    }
+    img.onerror = function () { img.remove(); };
+    img.src = url;
+  }
+
+  /** Header avatar uses a single dedicated <img>, so it needs its own loader. */
+  function loadHeaderAvatar(id) {
+    var img = $('hdr-avatar-img');
+    if (!img || !id) { return; }
+    img.hidden = true;
+    img.removeAttribute('src');
+    var known = avatarCache[id];
+    if (known && known !== 'pending') { img.src = known; img.hidden = false; return; }
+    if (known === null) { return; }
+    var api = contactApi();
+    if (!api || typeof api.getProfilePictureUrl !== 'function') {
+      avatarCache[id] = null;
+      return;
+    }
+    if (known === 'pending') { return; }
+    avatarCache[id] = 'pending';
+    Promise.resolve()
+      .then(function () { return api.getProfilePictureUrl(id, false); })
+      .then(function (url) {
+        avatarCache[id] = url || null;
+        var node = $('hdr-avatar-img');
+        if (!url || !node || openChatId !== id) { return; }
+        node.onerror = function () { node.hidden = true; };
+        node.src = url;
+        node.hidden = false;
+      })
+      .catch(function () { avatarCache[id] = null; });
+  }
+
+  function attachAvatar(node, id) {
+    if (!node || !id) { return; }
+    var known = avatarCache[id];
+    if (known === null) { return; }
+    if (known && known !== 'pending') { setAvatarImg(node, known); return; }
+    if (known === 'pending') {
+      (avatarWaiters[id] = avatarWaiters[id] || []).push(node);
+      return;
+    }
+    var api = contactApi();
+    if (!api || typeof api.getProfilePictureUrl !== 'function') {
+      avatarCache[id] = null;
+      return;
+    }
+    avatarCache[id] = 'pending';
+    Promise.resolve()
+      .then(function () { return api.getProfilePictureUrl(id, false); })
+      .then(function (url) {
+        avatarCache[id] = url || null;
+        var waiters = avatarWaiters[id] || [];
+        delete avatarWaiters[id];
+        if (url) {
+          waiters.forEach(function (n) { if (n.isConnected) { setAvatarImg(n, url); } });
+        }
+      })
+      .catch(function () { avatarCache[id] = null; });
+  }
+
+  // ---------------------------------------------------------------------
+  // header
+  // ---------------------------------------------------------------------
+
+  function setHeader(opts) {
+    opts = opts || {};
+    var btnBack = $('btn-back');
+    var title = $('hdr-title');
+    var sub = $('hdr-sub');
+    var avatar = $('hdr-avatar');
+    var initial = $('hdr-avatar-initial');
+    var img = $('hdr-avatar-img');
+
+    if (btnBack) { btnBack.hidden = !opts.back; }
+    if ($('btn-search')) { $('btn-search').hidden = !opts.search; }
+    if ($('btn-refresh')) { $('btn-refresh').hidden = !opts.refresh; }
+    if (title) { title.textContent = opts.title || 'WhatsApp'; }
+
+    if (sub) {
+      if (opts.sub) { sub.textContent = opts.sub; sub.hidden = false; }
+      else { sub.hidden = true; }
+    }
+
+    if (avatar) {
+      if (opts.avatar) {
+        avatar.hidden = false;
+        avatar.style.backgroundColor = avatarColor(opts.avatar.id || '');
+        if (initial) { initial.textContent = initialOf(opts.avatar.name); }
+        if (img) { img.hidden = true; img.removeAttribute('src'); }
+        loadHeaderAvatar(opts.avatar.id);
+      } else {
+        avatar.hidden = true;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // chat list rendering
   // ---------------------------------------------------------------------
+
+  function emptyState(title, text) {
+    var wrap = document.createElement('div');
+    wrap.className = 'wa-empty';
+    var t = document.createElement('div');
+    t.className = 'wa-empty-title';
+    t.textContent = title;
+    wrap.appendChild(t);
+    var p = document.createElement('div');
+    p.className = 'wa-empty-text';
+    p.textContent = text;
+    return wrap;
+  }
 
   function renderList() {
     var listEl = $('chat-list');
     if (!listEl) { return; }
+    var scrolledTop = listEl.scrollTop;
     var q = filterText.toLowerCase().trim();
     var items = chats.filter(function (c) {
       if (!q) { return true; }
@@ -210,17 +368,31 @@
         (c.preview || '').toLowerCase().indexOf(q) >= 0 ||
         (c.user || '').indexOf(q) >= 0;
     });
+
     listEl.textContent = '';
     if (!items.length) {
-      var empty = document.createElement('div');
-      empty.className = 'wa-empty';
-      empty.textContent = chats.length ? 'No chats found' : 'No chats yet';
-      listEl.appendChild(empty);
+      listEl.appendChild(chats.length
+        ? emptyState('No chats found', 'Try a different name or number.')
+        : emptyState('No chats yet', 'Start a conversation with the + button.'));
       return;
     }
+
     var frag = document.createDocumentFragment();
-    items.forEach(function (c) { frag.appendChild(buildRow(c)); });
+    // Rendering is capped so accounts with thousands of stored chats stay responsive;
+    // search still runs over the full list.
+    items.slice(0, 500).forEach(function (c) { frag.appendChild(buildRow(c)); });
     listEl.appendChild(frag);
+    listEl.scrollTop = scrolledTop;
+  }
+
+  function avatarNode(id, name, isGroup) {
+    var av = document.createElement('span');
+    av.className = 'wa-avatar';
+    av.style.backgroundColor = avatarColor(id);
+    av.textContent = initialOf(name);
+    if (isGroup) { av.setAttribute('data-group', '1'); }
+    attachAvatar(av, id);
+    return av;
   }
 
   function buildRow(c) {
@@ -228,39 +400,50 @@
     row.type = 'button';
     row.className = 'wa-row' + (c.unread ? ' wa-row-unread' : '');
 
-    var av = document.createElement('span');
-    av.className = 'wa-avatar';
-    av.style.backgroundColor = avatarColor(c.id);
-    av.textContent = initialOf(c.name);
-    row.appendChild(av);
+    row.appendChild(avatarNode(c.id, c.name, c.isGroup));
 
     var mid = document.createElement('span');
     mid.className = 'wa-row-mid';
+
+    var top = document.createElement('span');
+    top.className = 'wa-row-top';
     var name = document.createElement('span');
     name.className = 'wa-row-name';
-    name.textContent = c.name + (c.isGroup ? ' 👥' : '');
-    var prev = document.createElement('span');
-    prev.className = 'wa-row-prev';
-    prev.textContent = c.preview || '';
-    mid.appendChild(name);
-    mid.appendChild(prev);
-    row.appendChild(mid);
-
-    var right = document.createElement('span');
-    right.className = 'wa-row-right';
+    name.textContent = c.name;
+    top.appendChild(name);
+    if (c.pinned) { top.appendChild(icon('pin', 'wa-pin')); }
     var time = document.createElement('span');
     time.className = 'wa-row-time';
     time.textContent = fmtTime(c.ts);
-    right.appendChild(time);
+    top.appendChild(time);
+
+    var bottom = document.createElement('span');
+    bottom.className = 'wa-row-bottom';
+    var prev = document.createElement('span');
+    prev.className = 'wa-row-prev';
+    if (c.lastFromMe) {
+      var tick = icon(c.lastAck !== undefined && c.lastAck >= 2 ? 'tick2' : 'tick',
+        c.lastAck !== undefined && c.lastAck >= 3 ? 'wa-tick-read' : '');
+      prev.appendChild(tick);
+    }
+    var prevText = document.createElement('span');
+    prevText.className = 'wa-row-prev-text';
+    prevText.textContent = c.preview || (c.unread ? 'New messages' : '');
+    prev.appendChild(prevText);
+
+    bottom.appendChild(prev);
     if (c.unread) {
       var badge = document.createElement('span');
       badge.className = 'wa-badge';
       badge.textContent = c.unread > 99 ? '99+' : String(c.unread);
-      right.appendChild(badge);
+      bottom.appendChild(badge);
     }
-    row.appendChild(right);
 
-    row.addEventListener('click', function () { openChat(c.id); });
+    mid.appendChild(top);
+    mid.appendChild(bottom);
+    row.appendChild(mid);
+
+    row.addEventListener('click', function () { openChat(c.id, c.name, c.isGroup); });
     return row;
   }
 
@@ -284,12 +467,18 @@
     }
     return Promise.resolve(p).then(function (raw) {
       loadAttempts = 0;
-      var next = (raw || []).map(normalizeChat).filter(function (c) { return !!c.id; });
+      var next = (raw || [])
+        .map(normalizeChat)
+        .filter(function (c) {
+          if (!c.id) { return false; }
+          return !/status@broadcast|@broadcast|@newsletter/.test(c.id);
+        });
+      next.forEach(function (c) { if (locallyRead[c.id]) { c.unread = 0; } });
       next.sort(byPinnedThenTs);
       chats = next;
       chatById = Object.create(null);
       chats.forEach(function (c) { chatById[c.id] = c; });
-      renderList();
+      if (view === 'list') { renderList(); }
       return chats;
     }).catch(function (e) {
       log('loadChats error: ' + e);
@@ -309,66 +498,104 @@
 
   function scheduleSoftRefresh() {
     clearTimeout(softRefreshTimer);
-    softRefreshTimer = setTimeout(loadChats, 1200);
+    softRefreshTimer = setTimeout(loadChats, 1000);
+  }
+
+  // ---------------------------------------------------------------------
+  // panes
+  // ---------------------------------------------------------------------
+
+  function showList() {
+    view = 'list';
+    openChatId = null;
+    if ($('list-pane')) { $('list-pane').hidden = false; }
+    if ($('chat-pane')) { $('chat-pane').hidden = true; }
+    if ($('contacts-pane')) { $('contacts-pane').hidden = true; }
+    setHeader({ title: 'WhatsApp', back: false, search: true, refresh: true });
+    setUiState('list');
+    renderList();
+  }
+
+  function showContacts() {
+    view = 'contacts';
+    if ($('list-pane')) { $('list-pane').hidden = true; }
+    if ($('chat-pane')) { $('chat-pane').hidden = true; }
+    if ($('contacts-pane')) { $('contacts-pane').hidden = false; }
+    if ($('searchwrap')) { $('searchwrap').hidden = true; }
+    setHeader({ title: 'New chat', back: true, search: false, refresh: false });
+    loadContacts();
+  }
+
+  function showChatHeader(c) {
+    setHeader({
+      title: c.name,
+      sub: c.isGroup ? 'Group' : ('+' + c.user),
+      back: true,
+      search: false,
+      refresh: false,
+      avatar: { id: c.id, name: c.name }
+    });
   }
 
   // ---------------------------------------------------------------------
   // conversation
   // ---------------------------------------------------------------------
 
-  function openChat(id) {
+  function ensureChat(id, name, isGroup) {
     var c = chatById[id];
-    if (!c) {
-      toast('Chat not found');
-      return;
+    if (!id) { return null; }
+    if (c) {
+      if (name) { c.name = name; }
+      return c;
     }
+    c = {
+      id: id,
+      user: userOf(id),
+      name: name || userOf(id) || 'Chat',
+      isGroup: isGroup === undefined ? isGroupId(id) : !!isGroup,
+      unread: 0,
+      pinned: false,
+      ts: 0,
+      preview: '',
+      lastFromMe: false,
+      obj: null
+    };
+    chatById[id] = c;
+    return c;
+  }
+
+  function openChat(id, name, isGroup) {
+    var c = ensureChat(id, name, isGroup);
+    if (!c) { toast('Chat not found'); return; }
     openChatId = id;
     seenMsgKeys = Object.create(null);
+    view = 'chat';
 
+    if ($('searchwrap')) { $('searchwrap').hidden = true; }
     $('chat-pane').hidden = false;
     $('list-pane').hidden = true;
-    $('btn-back').hidden = false;
-    $('btn-refresh').hidden = true;
-    $('header-title').textContent = c.name;
-    var sub = $('header-subtitle');
-    if (c.isGroup) {
-      sub.textContent = 'Group';
-      sub.hidden = false;
-    } else if (c.user) {
-      sub.textContent = '+' + c.user;
-      sub.hidden = false;
-    } else {
-      sub.hidden = true;
-    }
+    $('contacts-pane').hidden = true;
+    showChatHeader(c);
     setUiState('chat');
 
     var msgsEl = $('messages');
     msgsEl.textContent = '';
     msgsEl.removeAttribute('data-day');
-    var loading = document.createElement('div');
+    var loading = emptyState('Loading messages…', 'Fetching from the linked account.');
     loading.className = 'wa-empty';
-    loading.textContent = 'Loading messages…';
     msgsEl.appendChild(loading);
+    if ($('btn-scroll-down')) { $('btn-scroll-down').hidden = true; }
 
     var input = $('msg-input');
     if (input) { input.value = ''; }
 
     markRead(id);
     loadMessages(id);
-    renderList();
   }
 
   function closeChat() {
-    if (!openChatId) { return false; }
-    openChatId = null;
-    $('chat-pane').hidden = true;
-    $('list-pane').hidden = false;
-    $('btn-back').hidden = true;
-    $('btn-refresh').hidden = false;
-    $('header-title').textContent = 'WhatsApp';
-    $('header-subtitle').hidden = true;
-    setUiState('list');
-    renderList();
+    if (view !== 'chat') { return false; }
+    showList();
     return true;
   }
 
@@ -380,16 +607,18 @@
       }
     } catch (e) {}
     var c = chatById[id];
-    if (c && c.unread) {
-      c.unread = 0;
-    }
+    if (c && c.unread) { c.unread = 0; }
+    locallyRead[id] = true;
+    if (view === 'list') { renderList(); }
   }
 
   function loadMessages(id) {
     var api = chatApi();
     var msgsEl = $('messages');
+    if (!msgsEl) { return; }
     if (!api || typeof api.getMessages !== 'function') {
       msgsEl.textContent = '';
+      msgsEl.appendChild(emptyState('Not ready yet', 'The WhatsApp engine is still starting.'));
       toast('Messaging API unavailable');
       return;
     }
@@ -397,7 +626,8 @@
     try {
       p = api.getMessages(id, { count: 40 });
     } catch (e) {
-      log('WPP.chat.getMessages threw: ' + e);
+      // chat_not_found: a brand-new conversation simply has no history yet.
+      handleLoadError(id, e);
       return;
     }
     Promise.resolve(p).then(function (raw) {
@@ -407,24 +637,46 @@
       msgsEl.removeAttribute('data-day');
       var msgs = (raw || []).map(normalizeMsg).filter(function (m) { return !!m.body || !!m.text; });
       msgs.sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
-      msgs.forEach(function (m) { appendBubble(m, false); });
+      if (!msgs.length) {
+        msgsEl.appendChild(emptyState('No messages yet', 'Say hello 👋'));
+      } else {
+        msgs.forEach(function (m) { appendBubble(m, false); });
+      }
       scrollToEnd();
     }).catch(function (e) {
-      log('getMessages error: ' + e);
       if (openChatId !== id) { return; }
-      msgsEl.textContent = '';
-      var err = document.createElement('div');
-      err.className = 'wa-empty';
-      err.textContent = 'Could not load messages';
-      msgsEl.appendChild(err);
+      handleLoadError(id, e);
     });
+  }
+
+  function handleLoadError(id, e) {
+    log('getMessages error: ' + e);
+    if (openChatId !== id) { return; }
+    var msgsEl = $('messages');
+    if (!msgsEl) { return; }
+    msgsEl.textContent = '';
+    var msg = String((e && e.message) || e || '');
+    if (/not\s*found/i.test(msg) || /chat_not_found/i.test(msg)) {
+      msgsEl.appendChild(emptyState('No messages yet', 'Say hello 👋'));
+    } else {
+      msgsEl.appendChild(emptyState('Could not load messages', 'Tap the conversation again to retry.'));
+    }
+  }
+
+  function tickFor(m) {
+    if (m.failed) { return null; }
+    if (m.ack === undefined) { return icon('tick'); }
+    if (m.ack === 0) { return icon('clock'); }
+    if (m.ack >= 3) { return icon('tick2', 'wa-tick-read'); }
+    if (m.ack >= 2) { return icon('tick2'); }
+    return icon('tick');
   }
 
   function appendBubble(m, isTmp) {
     var msgsEl = $('messages');
-    if (!msgsEl) { return; }
+    if (!msgsEl) { return null; }
     if (!isTmp) {
-      if (seenMsgKeys[m.key]) { return; }
+      if (seenMsgKeys[m.key]) { return null; }
       seenMsgKeys[m.key] = true;
     }
     var placeholder = msgsEl.querySelector('.wa-empty');
@@ -441,17 +693,31 @@
       msgsEl.appendChild(sep);
     }
 
-    var wrap = document.createElement('div');
-    wrap.className = 'wa-bubble ' + (m.fromMe ? 'wa-out' : 'wa-in') + (m.failed ? ' wa-failed' : '');
-    if (m.type && m.type !== 'chat' && m.type !== 'text') {
-      wrap.className += ' wa-media';
+    var prev = msgsEl.lastElementChild;
+    while (prev && !prev.classList.contains('wa-bubble')) {
+      prev = prev.previousElementSibling;
     }
+    var sameRun = false;
+    if (prev && prev.classList.contains('wa-bubble') &&
+      prev.getAttribute('data-from') === (m.fromMe ? '1' : '0')) {
+      var prevTs = Number(prev.getAttribute('data-ts') || 0);
+      if (!prevTs || Math.abs((m.ts || 0) - prevTs) < 300) { sameRun = true; }
+    }
+
+    var wrap = document.createElement('div');
+    wrap.className = 'wa-bubble ' + (m.fromMe ? 'wa-out' : 'wa-in') +
+      (sameRun ? ' wa-run' : '') + ' wa-tail' +
+      (m.failed ? ' wa-failed' : '');
+    wrap.setAttribute('data-from', m.fromMe ? '1' : '0');
+    wrap.setAttribute('data-ts', String(m.ts || 0));
+
+    if (sameRun && prev) { prev.classList.remove('wa-tail'); }
 
     var open = chatById[openChatId];
     if (!m.fromMe && open && open.isGroup && m.sender) {
       var lbl = document.createElement('div');
       lbl.className = 'wa-sender';
-      lbl.textContent = '+' + userOf(m.sender);
+      lbl.textContent = userOf(m.sender);
       wrap.appendChild(lbl);
     }
 
@@ -464,17 +730,32 @@
     meta.className = 'wa-bubble-meta';
     var t = document.createElement('span');
     t.className = 'wa-bubble-time';
-    t.textContent = fmtTime(m.ts) + (m.fromMe ? (m.failed ? ' ⚠' : ' ✓✓') : '');
+    t.textContent = fmtTime(m.ts);
     meta.appendChild(t);
+    if (m.fromMe) {
+      var tick = isTmp ? icon('clock') : tickFor(m);
+      if (tick) { meta.appendChild(tick); }
+    }
     wrap.appendChild(meta);
 
     if (isTmp) { wrap.setAttribute('data-tmp', '1'); }
+
+    bindLongPress(wrap, function () { return m.body || m.text || ''; });
+
     msgsEl.appendChild(wrap);
+    return wrap;
   }
 
   function scrollToEnd() {
     var msgsEl = $('messages');
     if (msgsEl) { msgsEl.scrollTop = msgsEl.scrollHeight; }
+    if ($('btn-scroll-down')) { $('btn-scroll-down').hidden = true; }
+  }
+
+  function nearBottom() {
+    var msgsEl = $('messages');
+    if (!msgsEl) { return true; }
+    return (msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight) < 90;
   }
 
   // ---------------------------------------------------------------------
@@ -491,51 +772,61 @@
       toast('Engine not ready yet');
       return;
     }
+
+    var chatId = openChatId;
     input.value = '';
+
     var now = Math.floor(Date.now() / 1000);
-    var tmp = {
+    var tmpMsg = {
       key: 'tmp-' + now + '-' + text.length,
       fromMe: true,
       body: text,
       text: text,
       ts: now,
       type: 'chat',
-      sender: '',
-      failed: false
+      ack: undefined,
+      sender: ''
     };
-    appendBubble(tmp, true);
+    var node = appendBubble(tmpMsg, true);
     scrollToEnd();
+
+    var pending = { chatId: chatId, text: text, node: node };
+    pendingSends.push(pending);
 
     var p;
     try {
-      p = api.sendTextMessage(openChatId, text);
+      p = api.sendTextMessage(chatId, text);
     } catch (e) {
       log('sendTextMessage threw: ' + e);
-      markLastBubbleFailed();
-      input.value = text;
+      failPending(pending, text);
       return;
     }
     Promise.resolve(p).then(function () {
-      var c = chatById[openChatId];
+      var c = chatById[chatId];
       if (c) {
         c.preview = text;
         c.ts = Math.floor(Date.now() / 1000);
+        c.lastFromMe = true;
       }
-      loadChats();
+      scheduleSoftRefresh();
     }).catch(function (e) {
       log('sendTextMessage error: ' + e);
       toast('Message not sent');
-      markLastBubbleFailed();
-      input.value = text;
+      failPending(pending, text);
     });
   }
 
-  function markLastBubbleFailed() {
-    var msgsEl = $('messages');
-    var last = msgsEl ? msgsEl.lastElementChild : null;
-    if (last && last.classList && last.classList.contains('wa-bubble')) {
-      last.classList.add('wa-failed');
+  function failPending(pending, text) {
+    var i = pendingSends.indexOf(pending);
+    if (i >= 0) { pendingSends.splice(i, 1); }
+    var node = pending.node;
+    if (node && node.isConnected) {
+      node.classList.add('wa-failed');
+      var tick = node.querySelector('.wa-tick');
+      if (tick) { tick.remove(); }
     }
+    var input = $('msg-input');
+    if (input && !input.value) { input.value = text; }
   }
 
   // ---------------------------------------------------------------------
@@ -559,7 +850,6 @@
     for (i = 0; i < cands.length; i++) {
       if (chatById[cands[i]]) { return cands[i]; }
     }
-    // Fallback: match on the bare user part (handles +/- and JID formatting quirks).
     var users = Object.create(null);
     for (i = 0; i < cands.length; i++) {
       var u = userOf(cands[i]);
@@ -573,28 +863,50 @@
     return null;
   }
 
+  function settlePending(cid, m) {
+    if (!m.fromMe) { return; }
+    for (var i = 0; i < pendingSends.length; i++) {
+      var p = pendingSends[i];
+      if (p.chatId === cid && p.text === m.body) {
+        pendingSends.splice(i, 1);
+        if (p.node && p.node.isConnected) { p.node.remove(); }
+        return;
+      }
+    }
+  }
+
   function onNewMessage(msg) {
     try {
       var m = normalizeMsg(msg);
       var cid = resolveChatId(msg);
-      var c = cid ? chatById[cid] : null;
-      if (!c) {
-        // New/unknown chat (or LID mapping): refresh the whole list.
+      if (!cid) {
         scheduleSoftRefresh();
         return;
       }
+      var c = ensureChat(cid);
+      settlePending(cid, m);
+
       c.preview = previewOf(msg) || c.preview;
       c.ts = m.ts || c.ts;
+      c.lastFromMe = m.fromMe;
+      c.lastAck = m.ack;
+      if (!m.fromMe) {
+        // A genuinely new incoming message re-arms the unread badge.
+        delete locallyRead[cid];
+      }
       if (!m.fromMe && cid !== openChatId) {
         c.unread = (c.unread || 0) + 1;
       }
       chats.sort(byPinnedThenTs);
-      if (cid === openChatId) {
+
+      if (cid === openChatId && view === 'chat') {
+        var stick = nearBottom();
         appendBubble(m, false);
-        scrollToEnd();
+        if (stick) { scrollToEnd(); }
+        else if ($('btn-scroll-down')) { $('btn-scroll-down').hidden = false; }
         if (!m.fromMe) { markRead(cid); }
       }
-      renderList();
+      if (view === 'list') { renderList(); }
     } catch (e) {
       log('onNewMessage error: ' + e);
     }
@@ -613,12 +925,201 @@
           var c = chatById[id];
           if (c && typeof e.unreadCount === 'number' && e.unreadCount !== c.unread) {
             c.unread = e.unreadCount;
-            renderList();
+            if (view === 'list') { renderList(); }
           }
         } catch (err) {}
       });
     } catch (e) {}
     log('custom UI subscribed to WPP events');
+  }
+
+  // ---------------------------------------------------------------------
+  // contacts (new chat)
+  // ---------------------------------------------------------------------
+
+  function loadContacts() {
+    var listEl = $('contact-list');
+    if (!listEl) { return; }
+    var api = contactApi();
+    if (!api || typeof api.list !== 'function') {
+      listEl.textContent = '';
+      listEl.appendChild(emptyState('Contacts unavailable', 'The engine is still starting.'));
+      return;
+    }
+    var p;
+    try {
+      p = api.list();
+    } catch (e) {
+      log('contact.list threw: ' + e);
+      listEl.textContent = '';
+      listEl.appendChild(emptyState('Could not load contacts', 'Try again in a moment.'));
+      return;
+    }
+    Promise.resolve(p).then(function (raw) {
+      var seen = Object.create(null);
+      var items = (raw || [])
+        .filter(function (c) { return c && c.id; })
+        .map(function (c) {
+          var id = idStr(c.id);
+          var name = c.name || c.pushname || c.shortName || c.formattedName || userOf(id);
+          return {
+            id: id,
+            name: name,
+            isGroup: isGroupId(id),
+            isMy: !!c.isMyContact
+          };
+        })
+        .filter(function (c) {
+          if (!c.id || seen[c.id]) { return false; }
+          if (/status@broadcast|@broadcast|@newsletter|@lid$/.test(c.id)) { return false; }
+          if (!c.name) { return false; }
+          seen[c.id] = true;
+          return true;
+        })
+        .sort(function (a, b) {
+          if (a.isGroup !== b.isGroup) { return a.isGroup ? 1 : -1; }
+          return a.name.localeCompare(b.name);
+        });
+
+      listEl.textContent = '';
+      if (!items.length) {
+        listEl.appendChild(emptyState('No contacts', 'Your address book is empty.'));
+        return;
+      }
+      var frag = document.createDocumentFragment();
+      items.slice(0, 400).forEach(function (it) {
+        var row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'wa-row';
+        row.appendChild(avatarNode(it.id, it.name, it.isGroup));
+        var mid = document.createElement('span');
+        mid.className = 'wa-row-mid';
+        var top = document.createElement('span');
+        top.className = 'wa-row-top';
+        var name = document.createElement('span');
+        name.className = 'wa-row-name';
+        name.textContent = it.name;
+        top.appendChild(name);
+        mid.appendChild(top);
+        var bottom = document.createElement('span');
+        bottom.className = 'wa-row-bottom';
+        var prev = document.createElement('span');
+        prev.className = 'wa-row-prev';
+        prev.textContent = it.isGroup ? 'Group' : ('+' + userOf(it.id));
+        bottom.appendChild(prev);
+        mid.appendChild(bottom);
+        row.appendChild(mid);
+        row.addEventListener('click', function () { openChat(it.id, it.name, it.isGroup); });
+        frag.appendChild(row);
+      });
+      listEl.appendChild(frag);
+    }).catch(function (e) {
+      log('contact.list error: ' + e);
+      listEl.textContent = '';
+      listEl.appendChild(emptyState('Could not load contacts', 'Try again in a moment.'));
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // long-press + copy
+  // ---------------------------------------------------------------------
+
+  function openSheet(text) {
+    sheetText = String(text || '');
+    if (!sheetText.trim()) { return; }
+    var preview = $('sheet-preview');
+    if (preview) { preview.textContent = sheetText; }
+    var scrim = $('sheet-scrim');
+    var sheet = $('sheet');
+    if (scrim) { scrim.hidden = false; }
+    if (sheet) { sheet.hidden = false; }
+  }
+
+  function closeSheet() {
+    var scrim = $('sheet-scrim');
+    var sheet = $('sheet');
+    if (scrim) { scrim.hidden = true; }
+    if (sheet) { sheet.hidden = true; }
+    sheetText = '';
+  }
+
+  function fallbackCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, ta.value.length);
+      var ok = document.execCommand('copy');
+      ta.remove();
+      if (ok) { toast('Copied to clipboard'); closeSheet(); }
+      else { toast('Could not copy'); }
+      return ok;
+    } catch (e) {
+      log('copy failed ' + e);
+      toast('Could not copy');
+      return false;
+    }
+  }
+
+  function copyText(text) {
+    var value = String(text || '');
+    if (!value.trim()) { return false; }
+    // Native bridge: reliable on Android (no clipboard permissions needed in a WebView).
+    try {
+      if (window.Android && Android.copyText) {
+        Android.copyText(value);
+        closeSheet();
+        return true;
+      }
+    } catch (e) {
+      log('native copy failed ' + e);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).then(function () {
+        toast('Copied to clipboard');
+        closeSheet();
+      }).catch(function () { fallbackCopy(value); });
+      return true;
+    }
+    return fallbackCopy(value);
+  }
+
+  function bindLongPress(el, textGetter) {
+    var timer = null;
+    var sx = 0;
+    var sy = 0;
+
+    function cancel() {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+
+    el.addEventListener('pointerdown', function (e) {
+      if (e.button && e.button !== 0) { return; }
+      sx = e.clientX; sy = e.clientY;
+      cancel();
+      timer = setTimeout(function () {
+        timer = null;
+        var t = textGetter();
+        if (t) { openSheet(t); }
+      }, 480);
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (timer && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) { cancel(); }
+    });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (ev) {
+      el.addEventListener(ev, cancel);
+    });
+    el.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      cancel();
+      var t = textGetter();
+      if (t) { openSheet(t); }
+    });
   }
 
   // ---------------------------------------------------------------------
@@ -632,22 +1133,68 @@
   }
 
   function bindUi() {
-    $('btn-back').addEventListener('click', closeChat);
+    $('btn-back').addEventListener('click', function () {
+      if (view === 'chat') { closeChat(); }
+      else if (view === 'contacts') { showList(); }
+    });
+
     $('btn-refresh').addEventListener('click', function () {
       toast('Refreshing…', 900);
       loadChats();
     });
-    $('btn-send').addEventListener('click', sendMessage);
-    $('msg-input').addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        sendMessage();
+
+    $('btn-new-chat').addEventListener('click', showContacts);
+
+    $('btn-search').addEventListener('click', function () {
+      var wrap = $('searchwrap');
+      if (!wrap) { return; }
+      wrap.hidden = !wrap.hidden;
+      if (!wrap.hidden) {
+        var input = $('search-input');
+        if (input) { input.focus(); }
+      } else {
+        filterText = '';
+        if ($('search-input')) { $('search-input').value = ''; }
+        renderList();
       }
     });
+
+    $('btn-search-close').addEventListener('click', function () {
+      if ($('searchwrap')) { $('searchwrap').hidden = true; }
+      filterText = '';
+      if ($('search-input')) { $('search-input').value = ''; }
+      renderList();
+    });
+
     $('search-input').addEventListener('input', function (e) {
       filterText = (e.target && e.target.value) || '';
       renderList();
     });
+
+    $('btn-send').addEventListener('click', sendMessage);
+
+    $('msg-input').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    $('msg-input').addEventListener('focus', function () {
+      setTimeout(scrollToEnd, 260);
+    });
+
+    var msgs = $('messages');
+    if (msgs) {
+      msgs.addEventListener('scroll', function () {
+        var btn = $('btn-scroll-down');
+        if (btn) { btn.hidden = nearBottom(); }
+      }, { passive: true });
+    }
+    $('btn-scroll-down').addEventListener('click', scrollToEnd);
+
+    $('sheet-scrim').addEventListener('click', closeSheet);
+    $('sheet-cancel').addEventListener('click', closeSheet);
+    $('sheet-copy').addEventListener('click', function () { copyText(sheetText); });
 
     // Keep the fixed overlay in sync with the on-screen keyboard.
     if (window.visualViewport) {
@@ -674,6 +1221,7 @@
       return;
     }
     bindUi();
+    showList();
     (function tryLoad() {
       loadAttempts++;
       var api = chatApi();
@@ -682,7 +1230,6 @@
           setTimeout(tryLoad, 1200);
         } else {
           toast('Could not reach the WhatsApp engine. Tap ↻ to retry.', 4000);
-          renderList();
         }
         return;
       }
@@ -696,7 +1243,16 @@
     refresh: function () { return loadChats(); },
     closeChat: function () { return closeChat(); },
     openChat: function (id) { openChat(String(id || '')); },
-    isOpen: function () { return !!openChatId; }
+    isOpen: function () { return view === 'chat'; },
+    onCopied: function () { closeSheet(); toast('Copied to clipboard'); },
+    /** Hardware back: close sheet -> leave contacts -> leave chat -> let the OS handle it. */
+    handleBack: function () {
+      var sheet = document.getElementById('sheet');
+      if (sheet && !sheet.hidden) { closeSheet(); return true; }
+      if (view === 'contacts') { showList(); return true; }
+      if (view === 'chat') { closeChat(); return true; }
+      return false;
+    }
   };
 
   setUiState('list');

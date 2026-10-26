@@ -2,6 +2,9 @@ package com.hybrid.webchat
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
@@ -14,6 +17,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.TextView
+import android.widget.Toast
 import org.json.JSONObject
 
 /**
@@ -48,6 +52,8 @@ class MainActivity : Activity() {
          *   to the native banner (the official page is left completely untouched)
          * - polls for #pane-side (rendered only once the user is actually linked) and
          *   then notifies Kotlin, which hides the official UI and injects our custom UI
+         * - self-heals: if the chat UI ever disappears from the DOM (e.g. an internal
+         *   WhatsApp re-render) it asks Kotlin to mount it again
          *
          * Everything is guarded so a second onPageFinished cannot double-subscribe.
          */
@@ -56,16 +62,17 @@ class MainActivity : Activity() {
   if (window.__wvmon) { return; }
   window.__wvmon = true;
   var bridge = window.Android;
-  function log(m) { try { bridge.log(String(m)); } catch (e) {} }
+  function log(m) { try { if (bridge) { bridge.log(String(m)); } } catch (e) {} }
   var wppReady = false;
   var linked = false;
   var lastCode = '';
+  var mounts = 0;
 
   function emitCode(code) {
     if (!code || code === lastCode) { return; }
     if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) { return; }
     lastCode = code;
-    try { bridge.onPairingCode(code); } catch (e) { log('code bridge error ' + e); }
+    try { if (bridge) { bridge.onPairingCode(code); } } catch (e) { log('code bridge error ' + e); }
   }
 
   function scanForCode() {
@@ -77,17 +84,24 @@ class MainActivity : Activity() {
     } catch (e) { log('scan error ' + e); }
   }
 
-  function markLinked() {
-    if (linked) { return; }
-    linked = true;
-    clearInterval(pollId);
-    log('linked: WhatsApp main pane is up');
-    try { bridge.onWppReady(); } catch (e) { log('bridge missing ' + e); }
+  function askMount() {
+    if (mounts >= 25) { return; }
+    mounts++;
+    try { if (bridge) { bridge.onWppReady(); } } catch (e) { log('bridge missing ' + e); }
   }
 
-  function checkLinked() {
-    if (linked) { return; }
-    if (document.querySelector('#pane-side')) { markLinked(); return; }
+  function check() {
+    var pane = null;
+    try { pane = document.querySelector('#pane-side'); } catch (e) {}
+    if (pane) {
+      if (!linked) {
+        linked = true;
+        log('linked: WhatsApp main pane is up');
+      }
+      // Re-arm only when our overlay is really gone (never fights an existing mount).
+      if (!document.getElementById('wv-root')) { askMount(); }
+      return;
+    }
     scanForCode();
   }
 
@@ -102,31 +116,36 @@ class MainActivity : Activity() {
         try {
           WPP.on('conn.stream_mode_changed', function (mode) {
             log('stream mode ' + mode);
-            if (mode === 'MAIN') { checkLinked(); }
+            if (mode === 'MAIN') { check(); }
           });
         } catch (e) { log('stream subscription error ' + e); }
         try {
           WPP.on('conn.auth_code_change', function (code) { emitCode(String(code)); });
         } catch (e) {}
-        checkLinked();
+        check();
       }, 300);
     } catch (e) { log('startWpp error ' + e); }
   }
 
-  var pollId = setInterval(function () { startWpp(); checkLinked(); }, 1500);
+  setInterval(function () { startWpp(); check(); }, 1500);
   startWpp();
-  checkLinked();
+  check();
 })();
 """
+
+        // Big assets are read once, not on every page load / on the UI thread.
+        private var cachedWpp: String? = null
+        private var cachedHtml: String? = null
+        private var cachedCss: String? = null
+        private var cachedUiJs: String? = null
     }
 
     private lateinit var webView: WebView
     private lateinit var codeBanner: TextView
+    private var lastPairingCode: String? = null
 
     /** "web" while the official UI is in front, "list"/"chat" once our UI drives it. */
     private var uiState: String = "web"
-
-    private var customUiInjected = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -138,6 +157,12 @@ class MainActivity : Activity() {
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
+
+        // Tap the pairing-code card to put the code on the clipboard.
+        codeBanner.setOnClickListener {
+            val code = lastPairingCode ?: return@setOnClickListener
+            copyToClipboard(code, getString(R.string.pairing_code_copied))
+        }
 
         configureWebView()
 
@@ -160,6 +185,7 @@ class MainActivity : Activity() {
             loadWithOverviewMode = true
             setSupportZoom(false)
         }
+        webView.setBackgroundColor(0xFF0B141A.toInt())
 
         webView.addJavascriptInterface(Bridge(), "Android")
 
@@ -167,8 +193,6 @@ class MainActivity : Activity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 if (url != null && url.startsWith("http")) {
-                    // A fresh document is coming: its JS guards are gone as well.
-                    customUiInjected = false
                     uiState = "web"
                 }
             }
@@ -206,7 +230,8 @@ class MainActivity : Activity() {
     /** Step 3: inject the WPPConnect bundle + the linking monitor. */
     private fun injectWppConnect(view: WebView?) {
         val target = view ?: return
-        val source = readAsset("wppconnect-wa.js")
+        if (isFinishing || isDestroyed) return
+        val source = cachedWpp ?: readAsset("wppconnect-wa.js").also { cachedWpp = it }
         if (source.isEmpty()) {
             Log.e(TAG, "wppconnect-wa.js asset missing")
             return
@@ -221,23 +246,26 @@ class MainActivity : Activity() {
             "\n  } catch (e) { if (window.Android) { try { Android.log('pkg: ' + e); } catch (x) {} } }" +
             "})();"
         target.evaluateJavascript(pkgScript) {
-            target.evaluateJavascript(MONITOR_JS, null)
+            if (!isFinishing && !isDestroyed) {
+                target.evaluateJavascript(MONITOR_JS, null)
+            }
         }
     }
 
-    /** Step 4: inject the custom UI into the LIVE page (never navigate/reload). */
+    /**
+     * Step 4: inject the custom UI into the LIVE page (never navigate/reload).
+     *
+     * Safe to call repeatedly: the JS side returns early when #wv-root already exists
+     * (mount guard) or when custom-ui.js has already been evaluated (window.CustomUI).
+     */
     private fun injectCustomUI() {
-        if (customUiInjected) return
-        customUiInjected = true
+        if (isFinishing || isDestroyed) return
         uiState = "list"
+        codeBanner.visibility = View.GONE
 
-        runOnUiThread {
-            codeBanner.visibility = View.GONE
-        }
-
-        val html = readAsset("custom-ui.html")
-        val css = readAsset("custom-ui.css")
-        val js = readAsset("custom-ui.js")
+        val html = cachedHtml ?: readAsset("custom-ui.html").also { cachedHtml = it }
+        val css = cachedCss ?: readAsset("custom-ui.css").also { cachedCss = it }
+        val js = cachedUiJs ?: readAsset("custom-ui.js").also { cachedUiJs = it }
         if (html.isEmpty() || js.isEmpty()) {
             Log.e(TAG, "custom UI assets missing")
             return
@@ -265,6 +293,8 @@ class MainActivity : Activity() {
 
         val uiScript = "(function () {\n" +
             "  try {\n" +
+            "    if (window.__wvcui) { return; }\n" +
+            "    window.__wvcui = true;\n" +
             js +
             "\n  } catch (e) { if (window.Android) { try { Android.log('ui: ' + e); } catch (x) {} } }" +
             "})();"
@@ -280,6 +310,16 @@ class MainActivity : Activity() {
         ""
     }
 
+    private fun copyToClipboard(text: String, toastText: String) {
+        try {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("WhatsApp Hybrid", text))
+            Toast.makeText(this, toastText, Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "clipboard failed", e)
+        }
+    }
+
     // ---------------------------------------------------------------------
     // JS bridge
     // ---------------------------------------------------------------------
@@ -289,10 +329,7 @@ class MainActivity : Activity() {
         /** Step 3 -> 4: linking is complete, take over the screen. */
         @JavascriptInterface
         fun onWppReady() {
-            runOnUiThread {
-                codeBanner.visibility = View.GONE
-                injectCustomUI()
-            }
+            runOnUiThread { injectCustomUI() }
         }
 
         /** Phone-number pairing code detected on the (untouched) official page. */
@@ -301,6 +338,7 @@ class MainActivity : Activity() {
             val normalized = code?.trim()?.uppercase() ?: return
             if (!PAIRING_CODE_REGEX.matches(normalized)) return
             runOnUiThread {
+                lastPairingCode = normalized
                 if (codeBanner.visibility == View.VISIBLE &&
                     codeBanner.text.toString().contains(normalized)
                 ) return@runOnUiThread
@@ -308,6 +346,33 @@ class MainActivity : Activity() {
                 codeBanner.text = getString(R.string.pairing_code_banner, normalized)
                 codeBanner.visibility = View.VISIBLE
             }
+        }
+
+        /** Custom UI asks to copy a message / number to the clipboard. */
+        @JavascriptInterface
+        fun copyText(text: String?) {
+            val value = text?.trim() ?: return
+            if (value.isEmpty()) return
+            runOnUiThread {
+                copyToClipboard(value, getString(R.string.text_copied))
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                // Acknowledge so the UI can close its action sheet with feedback.
+                try {
+                    webView.evaluateJavascript(
+                        "(function(){ try { if (window.CustomUI && CustomUI.onCopied) { CustomUI.onCopied(); } } catch (e) {} })();",
+                        null
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "copy ack failed", e)
+                }
+            }
+        }
+
+        /** Copy the pairing code from inside the page (same as tapping the banner). */
+        @JavascriptInterface
+        fun copyPairingCode() {
+            val code = lastPairingCode ?: return
+            runOnUiThread { copyToClipboard(code, getString(R.string.pairing_code_copied)) }
         }
 
         /** Custom UI reports which pane is in front so hardware-back can be routed. */
@@ -332,16 +397,15 @@ class MainActivity : Activity() {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             when (uiState) {
                 "chat" -> {
-                    // Close the conversation inside our UI instead of leaving the page.
+                    // Close the conversation (or a sheet) inside our UI instead of leaving.
                     webView.evaluateJavascript(
-                        "(function () { if (window.CustomUI && CustomUI.closeChat) { return CustomUI.closeChat() ? '1' : '0'; } return '0'; })();",
+                        "(function () { try { if (window.CustomUI && CustomUI.handleBack) { return CustomUI.handleBack() ? '1' : '0'; } if (window.CustomUI && CustomUI.closeChat) { return CustomUI.closeChat() ? '1' : '0'; } } catch (e) {} return '0'; })();",
                         null
                     )
                     return true
                 }
                 "list" -> return super.onKeyDown(keyCode, event)
             }
-            // Official WhatsApp UI in front: normal history behaviour.
             if (webView.canGoBack()) {
                 webView.goBack()
                 return true
@@ -368,7 +432,11 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        webView.destroy()
+        try {
+            webView.destroy()
+        } catch (e: Exception) {
+            Log.e(TAG, "webView.destroy failed", e)
+        }
         super.onDestroy()
     }
 }

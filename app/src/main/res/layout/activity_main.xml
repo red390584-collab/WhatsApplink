@@ -8,17 +8,24 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Floating banner that surfaces the phone-number pairing code while linking -->
+    <!--
+        Phone-number pairing code. Tapping the card copies the code to the clipboard,
+        so the code can be pasted anywhere (e.g. a password manager) while the
+        WebView session keeps waiting for the link to be approved.
+    -->
     <TextView
         android:id="@+id/codeBanner"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:background="#e60b141a"
+        android:layout_margin="12dp"
+        android:background="@drawable/bg_pairing_code"
+        android:clickable="true"
         android:elevation="8dp"
+        android:focusable="true"
         android:fontFamily="monospace"
         android:gravity="center"
-        android:lineSpacingExtra="3dp"
+        android:lineSpacingExtra="4dp"
         android:padding="14dp"
         android:textColor="#ffffff"
         android:textSize="15sp"
