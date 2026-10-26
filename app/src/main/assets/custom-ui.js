@@ -56,6 +56,15 @@
 
   function wpp() { return window.WPP || null; }
 
+  /** Full page reload: the only way out when the engine itself is wedged. */
+  function reloadPage() {
+    try {
+      if (window.Android && Android.reloadPage) { Android.reloadPage(); return true; }
+    } catch (e) {}
+    try { window.location.reload(); return true; } catch (e) {}
+    return false;
+  }
+
   function chatApi() {
     var w = wpp();
     return (w && w.chat) ? w.chat : null;
@@ -64,6 +73,98 @@
   function contactApi() {
     var w = wpp();
     return (w && w.contact) ? w.contact : null;
+  }
+
+  function waStore() {
+    var w = wpp();
+    return (w && w.whatsapp) ? w.whatsapp : null;
+  }
+
+  /** The live engine chat model (ChatStore), independent of the WPP wrapper. */
+  function chatModelOf(id) {
+    if (!id) { return null; }
+    var w = wpp();
+    if (!w) { return null; }
+    try {
+      if (w.chat && typeof w.chat.get === 'function') {
+        var c = w.chat.get(id);
+        if (c) { return c; }
+      }
+    } catch (e) {}
+    try {
+      var store = waStore();
+      if (store && store.ChatStore && typeof store.ChatStore.get === 'function') {
+        var c2 = store.ChatStore.get(id);
+        if (c2) { return c2; }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  /**
+   * 1:1 chats are addressed either by phone number (@c.us) or by the newer linked
+   * id (@lid). The list and the message/send APIs disagree on which one they use,
+   * so every engine call is given all known variants of the same chat.
+   */
+  function chatIds(id) {
+    var ids = [];
+    function add(x) {
+      var s = idStr(x);
+      if (s && ids.indexOf(s) < 0) { ids.push(s); }
+    }
+    add(id);
+    var model = chatModelOf(id);
+    if (model) {
+      add(model.id);
+      try { if (model.contact && model.contact.id) { add(model.contact.id); } } catch (e) {}
+    }
+    return ids;
+  }
+
+  // Same as chatIds() plus the @lid <-> @c.us counterpart, which may need a server
+  // round-trip: only used as a fallback so opening a chat stays instant.
+  function chatIdsWithLid(id) {
+    var ids = chatIds(id);
+    var api = contactApi();
+    if (!api || typeof api.getPnLidEntry !== 'function') { return Promise.resolve(ids); }
+    return Promise.resolve()
+      .then(function () { return api.getPnLidEntry(id); })
+      .then(function (entry) {
+        [entry && entry.phoneNumber, entry && entry.lid].forEach(function (x) {
+          var s = idStr(x);
+          if (s && ids.indexOf(s) < 0) { ids.push(s); }
+        });
+        return ids;
+      })
+      .catch(function () { return ids; });
+  }
+
+  function withTimeout(make, ms) {
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = setTimeout(function () {
+        if (settled) { return; }
+        settled = true;
+        reject(new Error('timeout'));
+      }, ms);
+      Promise.resolve()
+        .then(make)
+        .then(function (value) {
+          if (settled) { return; }
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        }, function (err) {
+          if (settled) { return; }
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
   }
 
   var ICONS = {
@@ -100,6 +201,8 @@
 
   var avatarCache = Object.create(null);   // id -> url | null | 'pending'
   var avatarWaiters = Object.create(null); // id -> [nodes]
+  var bubbleNodes = Object.create(null);   // message key -> rendered bubble
+  var loadToken = 0;                       // drops stale conversation fetches
 
   var AVATAR_COLORS = [
     '#00a884', '#1f8f74', '#2563a6', '#6b4fa8',
@@ -191,6 +294,7 @@
     var lm = c.lastMessage || null;
     return {
       id: id,
+      engineId: id,
       user: userOf(id),
       name: c.name || c.formattedTitle ||
         (c.contact && (c.contact.pushname || c.contact.name || c.contact.formattedName)) ||
@@ -562,6 +666,7 @@
     }
     c = {
       id: id,
+      engineId: id,
       user: userOf(id),
       name: name || userOf(id) || 'Chat',
       isGroup: isGroup === undefined ? isGroupId(id) : !!isGroup,
@@ -624,55 +729,224 @@
     if (view === 'list') { renderList(); }
   }
 
-  function loadMessages(id) {
-    var api = chatApi();
+  function loadMessages(id, attempt) {
+    attempt = attempt || 0;
     var msgsEl = $('messages');
-    if (!msgsEl) { return; }
+    if (!msgsEl || openChatId !== id) { return; }
+    var api = chatApi();
     if (!api || typeof api.getMessages !== 'function') {
-      msgsEl.textContent = '';
-      msgsEl.appendChild(emptyState('Not ready yet', 'The WhatsApp engine is still starting.'));
-      toast('Messaging API unavailable');
-      return;
-    }
-    var p;
-    try {
-      p = api.getMessages(id, { count: 40 });
-    } catch (e) {
-      // chat_not_found: a brand-new conversation simply has no history yet.
-      handleLoadError(id, e);
-      return;
-    }
-    Promise.resolve(p).then(function (raw) {
-      if (openChatId !== id) { return; }
-      seenMsgKeys = Object.create(null);
-      msgsEl.textContent = '';
-      msgsEl.removeAttribute('data-day');
-      var msgs = (raw || []).map(normalizeMsg).filter(function (m) { return !!m.body || !!m.text; });
-      msgs.sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
-      if (!msgs.length) {
-        msgsEl.appendChild(emptyState('No messages yet', 'Say hello 👋'));
+      // The engine is still booting: keep polling instead of giving up on a blank thread.
+      if (attempt < 45) {
+        setTimeout(function () {
+          if (openChatId === id) { loadMessages(id, attempt + 1); }
+        }, 1200);
       } else {
-        msgs.forEach(function (m) { appendBubble(m, false); });
+        renderLoadError('The WhatsApp engine is still starting.');
       }
-      scrollToEnd();
+      return;
+    }
+    var token = ++loadToken;
+    var ids = chatIds(id);
+    var alive = function () { return token === loadToken && openChatId === id; };
+
+    fetchMessages(api, ids, newestKey(ids)).then(function (raw) {
+      if (!alive()) { return null; }
+      var merged = mergeMessages([storeMessages(ids), raw]);
+      if (merged.length) { renderThread(merged); return null; }
+      // Nothing loaded: try the @lid/@c.us counterpart of the chat.
+      return chatIdsWithLid(id).then(function (more) {
+        if (!alive()) { return null; }
+        return fetchMessages(api, more.slice(ids.length), null).then(function (raw2) {
+          if (!alive()) { return null; }
+          var again = mergeMessages([storeMessages(more), raw2]);
+          if (again.length) { renderThread(again); return null; }
+          // Still nothing: let the hidden official UI open the chat so the engine
+          // hydrates it, then read the store once more.
+          return nudgeOfficialChat(more).then(function () {
+            if (!alive()) { return null; }
+            var last = mergeMessages([storeMessages(more)]);
+            if (last.length) { renderThread(last); } else { renderThread([]); }
+            return null;
+          });
+        });
+      });
     }).catch(function (e) {
-      if (openChatId !== id) { return; }
-      handleLoadError(id, e);
+      if (!alive()) { return; }
+      log('loadMessages(' + id + ') failed: ' + e);
+      renderLoadError(String((e && e.message) || e || 'unknown error'));
     });
   }
 
-  function handleLoadError(id, e) {
-    log('getMessages error: ' + e);
-    if (openChatId !== id) { return; }
+  function asMessageArray(raw) {
+    if (Array.isArray(raw)) { return raw; }
+    if (raw && Array.isArray(raw.messages)) { return raw.messages; }
+    return [];
+  }
+
+  /** Messages the engine already holds for these chat ids (no DB round-trip). */
+  function storeMessages(ids) {
+    var want = Object.create(null);
+    (ids || []).forEach(function (x) { if (x) { want[x] = true; } });
+    var out = [];
+    var seen = Object.create(null);
+
+    function push(m) {
+      if (!m) { return; }
+      var key = '';
+      try { key = m.id ? idStr(m.id) : ''; } catch (e) { key = ''; }
+      if (key && seen[key]) { return; }
+      if (key) { seen[key] = true; }
+      out.push(m);
+    }
+
+    var model = null;
+    for (var i = 0; i < (ids || []).length && !model; i++) { model = chatModelOf(ids[i]); }
+    if (model) {
+      try {
+        var collection = model.msgs;
+        var list = null;
+        if (collection) {
+          if (typeof collection.getModelsArray === 'function') { list = collection.getModelsArray(); }
+          else if (Array.isArray(collection.models)) { list = collection.models; }
+        }
+        if (list) { list.forEach(push); }
+        if (model.lastMessage) { push(model.lastMessage); }
+      } catch (e) { log('chat.msgs scan failed: ' + e); }
+    }
+
+    try {
+      var store = waStore();
+      var msgStore = store && store.MsgStore;
+      if (msgStore && typeof msgStore.getModelsArray === 'function') {
+        var all = msgStore.getModelsArray();
+        for (var j = 0; j < all.length; j++) {
+          var remote = '';
+          try { remote = all[j] && all[j].id ? idStr(all[j].id.remote) : ''; } catch (e2) { remote = ''; }
+          if (remote && want[remote]) { push(all[j]); }
+        }
+      }
+    } catch (e3) { log('MsgStore scan failed: ' + e3); }
+
+    return out;
+  }
+
+  /** Newest loaded message key, used as an explicit pagination anchor. */
+  function newestKey(ids) {
+    var best = null;
+    var bestTs = -1;
+    storeMessages(ids).forEach(function (m) {
+      var ts = Number((m && (m.t || m.timestamp)) || 0);
+      var key = '';
+      try { key = m && m.id ? idStr(m.id) : ''; } catch (e) { key = ''; }
+      if (key && ts >= bestTs) { bestTs = ts; best = key; }
+    });
+    return best;
+  }
+
+  /** Merge raw messages from several sources into one de-duplicated list. */
+  function mergeMessages(lists) {
+    var byKey = Object.create(null);
+    var order = [];
+    (lists || []).forEach(function (list) {
+      asMessageArray(list).forEach(function (raw) {
+        var m = normalizeMsg(raw);
+        if (!m.text && !m.body) { return; }
+        if (!byKey[m.key]) { order.push(m.key); }
+        byKey[m.key] = m;
+      });
+    });
+    var out = order.map(function (k) { return byKey[k]; });
+    out.sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
+    return out;
+  }
+
+  /** getMessages, retried on every known id variant of the chat. */
+  function fetchMessages(api, ids, anchor) {
+    var queue = (ids || []).slice();
+
+    function call(chatId, opts) {
+      return withTimeout(function () { return api.getMessages(chatId, opts); }, 10000)
+        .then(function (raw) { return asMessageArray(raw); })
+        .catch(function (e) {
+          log('getMessages(' + chatId + ') failed: ' + e);
+          return [];
+        });
+    }
+
+    function attempt() {
+      if (!queue.length) { return Promise.resolve([]); }
+      var chatId = queue.shift();
+      // The default anchor is the newest message the engine knows, which is what a
+      // conversation should show; an explicit anchor is only a fallback for builds
+      // where that default anchor is missing.
+      return call(chatId, { count: 80 }).then(function (list) {
+        if (list.length) { return list; }
+        if (!anchor) { return attempt(); }
+        return call(chatId, { count: 80, id: anchor }).then(function (list2) {
+          return list2.length ? list2 : attempt();
+        });
+      });
+    }
+
+    return attempt();
+  }
+
+  /**
+   * Last resort: click the chat row in the hidden official list so WhatsApp Web
+   * actually opens the conversation and loads its messages into the engine.
+   */
+  function nudgeOfficialChat(ids) {
+    try {
+      for (var i = 0; i < (ids || []).length; i++) {
+        var id = String(ids[i] || '').replace(/"/g, '\\"');
+        if (!id) { continue; }
+        var row = document.querySelector('#pane-side [data-id="' + id + '"]') ||
+          document.querySelector('#pane-side [data-id$="' + id + '"]');
+        if (row) {
+          row.click();
+          log('nudged official UI for ' + id);
+          break;
+        }
+      }
+    } catch (e) { log('nudge failed: ' + e); }
+    return wait(1200);
+  }
+
+  function renderThread(msgs) {
     var msgsEl = $('messages');
     if (!msgsEl) { return; }
     msgsEl.textContent = '';
-    var msg = String((e && e.message) || e || '');
-    if (/not\s*found/i.test(msg) || /chat_not_found/i.test(msg)) {
+    msgsEl.removeAttribute('data-day');
+    seenMsgKeys = Object.create(null);
+    bubbleNodes = Object.create(null);
+    if (!msgs || !msgs.length) {
       msgsEl.appendChild(emptyState('No messages yet', 'Say hello 👋'));
-    } else {
-      msgsEl.appendChild(emptyState('Could not load messages', 'Tap the conversation again to retry.'));
+      return;
     }
+    // Keep the DOM light on accounts with very long threads.
+    var shown = msgs.length > 400 ? msgs.slice(msgs.length - 400) : msgs;
+    shown.forEach(function (m) { appendBubble(m, false); });
+    scrollToEnd();
+  }
+
+  function renderLoadError(detail) {
+    var msgsEl = $('messages');
+    if (!msgsEl) { return; }
+    msgsEl.textContent = '';
+    msgsEl.removeAttribute('data-day');
+    var box = emptyState('Could not load messages', detail || 'The WhatsApp engine did not answer.');
+    var retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'wa-retry';
+    retry.textContent = 'Retry';
+    retry.addEventListener('click', function () {
+      if (!openChatId) { return; }
+      msgsEl.textContent = '';
+      msgsEl.appendChild(emptyState('Loading messages…', 'Fetching from the linked account.'));
+      loadMessages(openChatId);
+    });
+    box.appendChild(retry);
+    msgsEl.appendChild(box);
   }
 
   function tickFor(m) {
@@ -682,6 +956,19 @@
     if (m.ack >= 3) { return icon('tick2', 'wa-tick-read'); }
     if (m.ack >= 2) { return icon('tick2'); }
     return icon('tick');
+  }
+
+  /** Re-paint the delivery ticks of an already rendered outgoing bubble. */
+  function updateBubbleAck(node, ack) {
+    if (!node || typeof ack !== 'number') { return; }
+    var meta = node.querySelector('.wa-bubble-meta');
+    if (!meta) { return; }
+    var old = meta.querySelector('.wa-tick');
+    if (old) { old.parentNode.removeChild(old); }
+    var tick = tickFor({ ack: ack, failed: false });
+    if (tick) { meta.appendChild(tick); }
+    var c = openChatId ? chatById[openChatId] : null;
+    if (c && c.lastFromMe) { c.lastAck = ack; }
   }
 
   function appendBubble(m, isTmp) {
@@ -722,6 +1009,7 @@
       (m.failed ? ' wa-failed' : '');
     wrap.setAttribute('data-from', m.fromMe ? '1' : '0');
     wrap.setAttribute('data-ts', String(m.ts || 0));
+    wrap.setAttribute('data-key', m.key);
 
     if (sameRun && prev) { prev.classList.remove('wa-tail'); }
 
@@ -751,6 +1039,7 @@
     wrap.appendChild(meta);
 
     if (isTmp) { wrap.setAttribute('data-tmp', '1'); }
+    else { bubbleNodes[m.key] = wrap; }
 
     bindLongPress(wrap, function () { return m.body || m.text || ''; });
 
@@ -785,12 +1074,14 @@
       return;
     }
 
-    var chatId = openChatId;
+    var uiChatId = openChatId;
+    var chat = chatById[uiChatId];
+    var target = (chat && chat.engineId) || uiChatId;
     input.value = '';
 
     var now = Math.floor(Date.now() / 1000);
     var tmpMsg = {
-      key: 'tmp-' + now + '-' + text.length,
+      key: 'tmp-' + now + '-' + Math.random().toString(36).slice(2, 8),
       fromMe: true,
       body: text,
       text: text,
@@ -802,43 +1093,108 @@
     var node = appendBubble(tmpMsg, true);
     scrollToEnd();
 
-    var pending = { chatId: chatId, text: text, node: node };
+    var pending = { chatId: uiChatId, text: text, node: node };
     pendingSends.push(pending);
 
-    var p;
-    try {
-      p = api.sendTextMessage(chatId, text);
-    } catch (e) {
-      log('sendTextMessage threw: ' + e);
-      failPending(pending, text);
-      return;
-    }
-    Promise.resolve(p).then(function () {
-      var c = chatById[chatId];
-      if (c) {
-        c.preview = text;
-        c.ts = Math.floor(Date.now() / 1000);
-        c.lastFromMe = true;
-      }
-      scheduleSoftRefresh();
+    attemptSend(api, target, text, uiChatId).then(function (result) {
+      confirmSent(pending, result);
     }).catch(function (e) {
       log('sendTextMessage error: ' + e);
-      toast('Message not sent');
-      failPending(pending, text);
+      failPending(pending, text, e);
     });
   }
 
-  function failPending(pending, text) {
+  /** True for the errors that mean "this chat id is not usable", not "sending broke". */
+  function isIdError(e) {
+    var s = String((e && (e.code || e.message)) || e || '');
+    return /chat_not_found|invalid_wid|invalid|not\s*found/i.test(s);
+  }
+
+  /**
+   * Sends and, when the engine rejects the id it was given, retries with the
+   * @c.us/@lid counterpart of the chat and finally with the chat the engine finds
+   * (or creates) for that id. Other failures are reported straight away: retrying
+   * blindly could post the same message twice.
+   */
+  function attemptSend(api, target, text, uiChatId) {
+    return Promise.resolve()
+      .then(function () { return api.sendTextMessage(target, text); })
+      .catch(function (firstError) {
+        log('send to ' + target + ' failed: ' + firstError);
+        if (!isIdError(firstError)) { throw firstError; }
+        return chatIdsWithLid(uiChatId).then(function (ids) {
+          var alt = null;
+          for (var i = 0; i < ids.length; i++) {
+            if (ids[i] !== target) { alt = ids[i]; break; }
+          }
+          if (!alt) { throw firstError; }
+          return api.sendTextMessage(alt, text);
+        });
+      })
+      .catch(function (secondError) {
+        if (!isIdError(secondError)) { throw secondError; }
+        if (!api || typeof api.find !== 'function') { throw secondError; }
+        return Promise.resolve()
+          .then(function () { return api.find(uiChatId); })
+          .then(function (model) {
+            var id = idStr(model && model.id);
+            if (!id || id === target) { throw secondError; }
+            return api.sendTextMessage(id, text);
+          });
+      });
+  }
+
+  function confirmSent(pending, result) {
+    var i = pendingSends.indexOf(pending);
+    if (i >= 0) { pendingSends.splice(i, 1); }
+
+    var ack = (result && typeof result.ack === 'number') ? result.ack : 0;
+    var key = idStr(result && result.id);
+    var node = pending.node;
+
+    if (node && node.isConnected) {
+      node.removeAttribute('data-tmp');
+      if (key) {
+        node.setAttribute('data-key', key);
+        bubbleNodes[key] = node;
+        seenMsgKeys[key] = true;
+      }
+      updateBubbleAck(node, ack);
+    }
+
+    var c = chatById[pending.chatId];
+    if (c) {
+      c.preview = pending.text;
+      c.ts = Math.floor(Date.now() / 1000);
+      c.lastFromMe = true;
+      c.lastAck = ack;
+      chats.sort(byPinnedThenTs);
+      if (view === 'list') { renderList(); }
+    }
+    scheduleSoftRefresh();
+  }
+
+  function failPending(pending, text, err) {
     var i = pendingSends.indexOf(pending);
     if (i >= 0) { pendingSends.splice(i, 1); }
     var node = pending.node;
     if (node && node.isConnected) {
       node.classList.add('wa-failed');
       var tick = node.querySelector('.wa-tick');
-      if (tick) { tick.remove(); }
+      if (tick) { tick.parentNode.removeChild(tick); }
+      var meta = node.querySelector('.wa-bubble-meta');
+      if (meta && !meta.querySelector('.wa-fail-flag')) {
+        var flag = document.createElement('span');
+        flag.className = 'wa-fail-flag';
+        flag.textContent = 'Not sent';
+        meta.appendChild(flag);
+      }
     }
-    var input = $('msg-input');
-    if (input && !input.value) { input.value = text; }
+    var detail = String((err && (err.message || err.code)) || err || '').slice(0, 90);
+    toast(detail ? ('Message not sent — ' + detail) : 'Message not sent', 5000);
+    log('send failed: ' + detail);
+    var field = $('msg-input');
+    if (field && !field.value) { field.value = text; }
   }
 
   // ---------------------------------------------------------------------
@@ -930,6 +1286,18 @@
     if (!w || typeof w.on !== 'function') { return; }
     subscribed = true;
     w.on('chat.new_message', function (msg) { onNewMessage(msg); });
+    try {
+      w.on('chat.msg_ack_change', function (e) {
+        try {
+          var ack = e && e.ack;
+          var ids = (e && e.ids) || [];
+          for (var i = 0; i < ids.length; i++) {
+            var node = bubbleNodes[idStr(ids[i])];
+            if (node && node.isConnected) { updateBubbleAck(node, ack); }
+          }
+        } catch (err) {}
+      });
+    } catch (e) {}
     try {
       w.on('chat.unread_count_changed', function (e) {
         try {
@@ -1151,6 +1519,12 @@
     });
 
     $('btn-refresh').addEventListener('click', function () {
+      // No engine at all -> reload the page instead of refreshing an empty list.
+      if (!chatApi()) {
+        toast('Reloading WhatsApp…', 1200);
+        reloadPage();
+        return;
+      }
       toast('Refreshing…', 900);
       loadChats();
     });
@@ -1208,14 +1582,23 @@
     $('sheet-cancel').addEventListener('click', closeSheet);
     $('sheet-copy').addEventListener('click', function () { copyText(sheetText); });
 
-    // Keep the fixed overlay in sync with the on-screen keyboard.
+    // Shrink the fixed overlay only when an on-screen keyboard really covers it.
+    // (The activity uses adjustResize, so normally the WebView is resized already;
+    // applying the viewport metrics unconditionally used to leave a zero-height,
+    // i.e. blank, overlay on some devices.)
     if (window.visualViewport) {
       var vv = window.visualViewport;
       var adjust = function () {
         var root = document.getElementById('wv-root');
         if (!root) { return; }
-        root.style.top = vv.offsetTop + 'px';
-        root.style.height = vv.height + 'px';
+        var inset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+        if (inset > 120) {
+          root.style.top = vv.offsetTop + 'px';
+          root.style.height = vv.height + 'px';
+        } else {
+          root.style.top = '';
+          root.style.height = '';
+        }
       };
       vv.addEventListener('resize', adjust);
       vv.addEventListener('scroll', adjust);
@@ -1241,7 +1624,7 @@
         if (loadAttempts <= 60) {
           setTimeout(tryLoad, 1200);
         } else {
-          toast('Could not reach the WhatsApp engine. Tap ↻ to retry.', 4000);
+          toast('Could not reach the WhatsApp engine. Tap ↻ to reload.', 5000);
         }
         return;
       }

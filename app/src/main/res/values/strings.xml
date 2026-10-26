@@ -3,4 +3,5 @@
     <string name="pairing_code_banner">Pairing code: %1$s\nTap here to copy · WhatsApp › Linked devices › Link with phone number</string>
     <string name="pairing_code_copied">Pairing code copied</string>
     <string name="text_copied">Copied to clipboard</string>
+    <string name="load_error">Could not open WhatsApp Web.\n\nCheck your connection, then tap here to try again.</string>
 </resources>

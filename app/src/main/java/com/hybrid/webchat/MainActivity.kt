@@ -26,13 +26,17 @@ import org.json.JSONObject
  * The single WebView loads the OFFICIAL https://web.whatsapp.com so the user can link
  * by QR code or by the phone-number pairing code. The WebView is a normal
  * (non-incognito) instance, so cookies + DOM storage + IndexedDB persist and the linked
- * session survives app restarts; saveState/restoreState keeps the navigation on top.
+ * session survives app restarts. Every cold start re-loads the official page (the engine
+ * restores the session from its own storage) - restoring a saved navigation state was
+ * what used to leave a black, empty screen after the process had been killed.
  *
  * After every page load we inject the WPPConnect (wa-js) bundle from assets and watch
- * for WhatsApp Web finishing initialization (the #pane-side chat pane appears => the
- * user is linked). At that point the official UI is hidden with CSS ONLY - it is never
- * removed from the DOM and the page is never reloaded, so the WhatsApp engine keeps
- * running - and the custom mobile UI is injected on top, driven by the WPP bridge.
+ * for WhatsApp Web finishing initialization (the #pane-side chat pane appears and the
+ * connection reports an authenticated session => the user is linked). At that point the
+ * official UI is hidden with CSS ONLY - it is never removed from the DOM and the page is
+ * never reloaded, so the WhatsApp engine keeps running - and the custom mobile UI is
+ * injected on top, driven by the WPP bridge. If the engine ever logs out, the overlay is
+ * removed and the official linking screen is loaded again.
  */
 class MainActivity : Activity() {
 
@@ -40,20 +44,22 @@ class MainActivity : Activity() {
         private const val TAG = "HybridWA"
         private const val HOME_URL = "https://web.whatsapp.com"
         private const val DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 
         private val PAIRING_CODE_REGEX = Regex("^[A-Z0-9]{4}-[A-Z0-9]{4}$")
 
         /**
          * Linking monitor, evaluated inside the WhatsApp page.
          *
-         * - waits for WPP.webpack.onReady to subscribe to connection events
+         * - hooks the wa-js loader + connection events (wa-js 4.x has no WPP.webpack)
          * - scans the page for the XXXX-XXXX phone-number pairing code and forwards it
          *   to the native banner (the official page is left completely untouched)
-         * - polls for #pane-side (rendered only once the user is actually linked) and
-         *   then notifies Kotlin, which hides the official UI and injects our custom UI
+         * - polls for #pane-side / [data-testid=chat-list] together with the engine's
+         *   authenticated state (rendered only once the user is actually linked) and
+         *   then notifies Kotlin, which injects our custom UI
          * - self-heals: if the chat UI ever disappears from the DOM (e.g. an internal
          *   WhatsApp re-render) it asks Kotlin to mount it again
+         * - reports a logout/unlink so Kotlin can fall back to the official QR screen
          *
          * Everything is guarded so a second onPageFinished cannot double-subscribe.
          */
@@ -63,16 +69,28 @@ class MainActivity : Activity() {
   window.__wvmon = true;
   var bridge = window.Android;
   function log(m) { try { if (bridge) { bridge.log(String(m)); } } catch (e) {} }
-  var wppReady = false;
+
+  // Keep WhatsApp's IndexedDB (the linked session) from being evicted under
+  // storage pressure - that is what silently logs the device out.
+  try {
+    if (navigator.storage && typeof navigator.storage.persist === 'function') {
+      navigator.storage.persist();
+    }
+  } catch (e) {}
+
   var linked = false;
   var lastCode = '';
-  var mounts = 0;
+  var lastMountAt = 0;
+  var lastUnlinkAt = 0;
+  var paneMisses = 0;
+  var wppHooked = false;
 
   function emitCode(code) {
-    if (!code || code === lastCode) { return; }
-    if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) { return; }
-    lastCode = code;
-    try { if (bridge) { bridge.onPairingCode(code); } } catch (e) { log('code bridge error ' + e); }
+    var c = String(code || '').toUpperCase();
+    if (c === lastCode) { return; }
+    if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c)) { return; }
+    lastCode = c;
+    try { if (bridge) { bridge.onPairingCode(c); } } catch (e) { log('code bridge error ' + e); }
   }
 
   function scanForCode() {
@@ -80,55 +98,129 @@ class MainActivity : Activity() {
       var txt = (document.body && document.body.innerText) ? document.body.innerText : '';
       var flat = txt.replace(/\s+/g, '');
       var m = flat.match(/[A-Z0-9]{4}-[A-Z0-9]{4}/);
-      if (m) { emitCode(m[0].toUpperCase()); }
+      if (m) { emitCode(m[0]); }
     } catch (e) { log('scan error ' + e); }
   }
 
+  function mainPane() {
+    try {
+      return document.querySelector('#pane-side') ||
+        document.querySelector('[data-testid="chat-list"]');
+    } catch (e) { return null; }
+  }
+
+  function engineAuthenticated() {
+    try {
+      var w = window.WPP;
+      if (w && w.conn && typeof w.conn.isAuthenticated === 'function') {
+        return w.conn.isAuthenticated() !== false;
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  // The chat list container is the primary signal, but the engine itself is the
+  // fallback: if WhatsApp ever renames its panes we still take over a linked session.
+  function engineHasChats() {
+    try {
+      var w = window.WPP;
+      var store = w && w.whatsapp;
+      if (store && store.ChatStore && typeof store.ChatStore.getModelsArray === 'function') {
+        return store.ChatStore.getModelsArray().length > 0;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function engineMainLoaded() {
+    try {
+      var w = window.WPP;
+      if (w && w.conn && typeof w.conn.isMainLoaded === 'function') {
+        return w.conn.isMainLoaded() === true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function isLinked() {
+    if (!engineAuthenticated()) { return false; }
+    if (mainPane()) { return true; }
+    return engineMainLoaded() && engineHasChats();
+  }
+
+  function ensureHideStyle() {
+    if (document.getElementById('wv-style')) { return; }
+    try {
+      var st = document.createElement('style');
+      st.id = 'wv-style';
+      st.textContent = 'body > *:not(#wv-root) { display: none !important; }';
+      document.head.appendChild(st);
+    } catch (e) { log('hide style failed ' + e); }
+  }
+
   function askMount() {
-    if (mounts >= 25) { return; }
-    mounts++;
-    try { if (bridge) { bridge.onWppReady(); } } catch (e) { log('bridge missing ' + e); }
+    try { if (bridge) { bridge.onWppReady(); } } catch (e) { log('mount bridge error ' + e); }
+  }
+
+  function askUnlink(reason) {
+    var now = Date.now();
+    if (now - lastUnlinkAt < 10000) { return; }
+    lastUnlinkAt = now;
+    linked = false;
+    log('unlinked: ' + reason);
+    try { if (bridge) { bridge.onUnlinked(); } } catch (e) { log('unlink bridge error ' + e); }
   }
 
   function check() {
-    var pane = null;
-    try { pane = document.querySelector('#pane-side'); } catch (e) {}
-    if (pane) {
+    if (isLinked()) {
+      paneMisses = 0;
       if (!linked) {
         linked = true;
         log('linked: WhatsApp main pane is up');
       }
-      // Re-arm only when our overlay is really gone (never fights an existing mount).
-      if (!document.getElementById('wv-root')) { askMount(); }
+      if (document.getElementById('wv-root')) { ensureHideStyle(); return; }
+      // Never spam the mount, but keep retrying: a page can finish loading before
+      // the engine is able to render our overlay.
+      var now = Date.now();
+      if (now - lastMountAt < 2500) { return; }
+      lastMountAt = now;
+      askMount();
+      return;
+    }
+    if (linked) {
+      // WhatsApp re-renders its panes all the time, so only treat a long absence of the
+      // chat pane together with an unauthenticated engine as a real unlink.
+      paneMisses++;
+      if (paneMisses >= 8 && !engineAuthenticated() && document.getElementById('wv-root')) {
+        askUnlink('session ended');
+      }
       return;
     }
     scanForCode();
   }
 
-  function startWpp() {
-    if (wppReady) { return; }
-    if (!window.WPP || !window.WPP.webpack || typeof window.WPP.webpack.onReady !== 'function') { return; }
+  // wa-js 4.x has no window.WPP.webpack: hook the loader and the connection events.
+  function hookWpp() {
+    if (wppHooked) { return; }
+    var w = window.WPP;
+    if (!w || typeof w.on !== 'function') { return; }
+    wppHooked = true;
     try {
-      WPP.webpack.onReady(function () {
-        if (wppReady) { return; }
-        wppReady = true;
-        log('wpp loader ready');
-        try {
-          WPP.on('conn.stream_mode_changed', function (mode) {
-            log('stream mode ' + mode);
-            if (mode === 'MAIN') { check(); }
-          });
-        } catch (e) { log('stream subscription error ' + e); }
-        try {
-          WPP.on('conn.auth_code_change', function (code) { emitCode(String(code)); });
-        } catch (e) {}
-        check();
-      }, 300);
-    } catch (e) { log('startWpp error ' + e); }
+      w.on('conn.main_ready', function () { log('conn main_ready'); check(); });
+      w.on('conn.authenticated', function () { check(); });
+      w.on('conn.stream_mode_changed', function (mode) { if (mode === 'MAIN') { check(); } });
+      w.on('conn.auth_code_change', function (code) { emitCode(String(code)); });
+      w.on('conn.logout', function () { askUnlink('conn.logout'); });
+    } catch (e) { log('wpp hook error ' + e); }
+    try {
+      if (w.loader && typeof w.loader.onReady === 'function') {
+        w.loader.onReady(function () { log('wpp loader ready'); check(); }, 300);
+      }
+    } catch (e) {}
   }
 
-  setInterval(function () { startWpp(); check(); }, 1500);
-  startWpp();
+  setInterval(function () { hookWpp(); check(); }, 1500);
+  hookWpp();
   check();
 })();
 """
@@ -142,6 +234,7 @@ class MainActivity : Activity() {
 
     private lateinit var webView: WebView
     private lateinit var codeBanner: TextView
+    private lateinit var errorView: TextView
     private var lastPairingCode: String? = null
 
     /** "web" while the official UI is in front, "list"/"chat" once our UI drives it. */
@@ -152,6 +245,7 @@ class MainActivity : Activity() {
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webView)
         codeBanner = findViewById(R.id.codeBanner)
+        errorView = findViewById(R.id.errorView)
 
         // CRITICAL: cookies keep the WhatsApp Web session alive across restarts.
         val cookieManager = CookieManager.getInstance()
@@ -164,12 +258,18 @@ class MainActivity : Activity() {
             copyToClipboard(code, getString(R.string.pairing_code_copied))
         }
 
-        configureWebView()
-
-        val restored = savedInstanceState != null && webView.restoreState(savedInstanceState) != null
-        if (!restored) {
+        errorView.setOnClickListener {
+            errorView.visibility = View.GONE
             webView.loadUrl(HOME_URL)
         }
+
+        configureWebView()
+
+        // Always load the official page. The linked session lives in the WebView's
+        // cookie jar + IndexedDB and is restored by WhatsApp Web itself; restoring a
+        // stale navigation state instead is what left a black, empty screen after the
+        // app had been killed in the background.
+        webView.loadUrl(HOME_URL)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -194,6 +294,7 @@ class MainActivity : Activity() {
                 super.onPageStarted(view, url, favicon)
                 if (url != null && url.startsWith("http")) {
                     uiState = "web"
+                    errorView.visibility = View.GONE
                 }
             }
 
@@ -201,7 +302,23 @@ class MainActivity : Activity() {
                 super.onPageFinished(view, url)
                 Log.i(TAG, "page finished: $url")
                 if (url != null && url.contains("web.whatsapp.com")) {
+                    // Persist the session cookies now, so an abrupt process kill cannot
+                    // lose the link the user just approved.
+                    CookieManager.getInstance().flush()
                     injectWppConnect(view)
+                }
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: android.webkit.WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                if (request?.isForMainFrame != true) return
+                Log.e(TAG, "main frame load error: ${error?.description}")
+                if (!isFinishing && !isDestroyed) {
+                    errorView.visibility = View.VISIBLE
                 }
             }
 
@@ -303,6 +420,24 @@ class MainActivity : Activity() {
         webView.evaluateJavascript(uiScript, null)
     }
 
+    /** Undo the overlay + hide rule so the official UI is visible/usable again. */
+    private fun removeCustomUi() {
+        if (isFinishing || isDestroyed) return
+        try {
+            webView.evaluateJavascript(
+                "(function () { try {\n" +
+                    "  var r = document.getElementById('wv-root');\n" +
+                    "  if (r && r.parentNode) { r.parentNode.removeChild(r); }\n" +
+                    "  var s = document.getElementById('wv-style');\n" +
+                    "  if (s && s.parentNode) { s.parentNode.removeChild(s); }\n" +
+                    "} catch (e) {} })();",
+                null
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "removeCustomUi failed", e)
+        }
+    }
+
     private fun readAsset(fileName: String): String = try {
         assets.open(fileName).bufferedReader().use { it.readText() }
     } catch (e: Exception) {
@@ -330,6 +465,22 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun onWppReady() {
             runOnUiThread { injectCustomUI() }
+        }
+
+        /**
+         * The linked device was logged out / the session expired. Drop our overlay and
+         * go back to the official linking screen instead of showing a dead chat list.
+         */
+        @JavascriptInterface
+        fun onUnlinked() {
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                uiState = "web"
+                lastPairingCode = null
+                codeBanner.visibility = View.GONE
+                removeCustomUi()
+                webView.loadUrl(HOME_URL)
+            }
         }
 
         /** Phone-number pairing code detected on the (untouched) official page. */
@@ -375,6 +526,17 @@ class MainActivity : Activity() {
             runOnUiThread { copyToClipboard(code, getString(R.string.pairing_code_copied)) }
         }
 
+        /** The custom UI is stuck (engine unreachable): reload the whole WhatsApp page. */
+        @JavascriptInterface
+        fun reloadPage() {
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                uiState = "web"
+                errorView.visibility = View.GONE
+                webView.loadUrl(HOME_URL)
+            }
+        }
+
         /** Custom UI reports which pane is in front so hardware-back can be routed. */
         @JavascriptInterface
         fun onUiState(state: String?) {
@@ -414,21 +576,14 @@ class MainActivity : Activity() {
         return super.onKeyDown(keyCode, event)
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        webView.saveState(outState)
-        CookieManager.getInstance().flush()
-    }
-
     override fun onPause() {
         super.onPause()
-        webView.onPause()
         CookieManager.getInstance().flush()
     }
 
-    override fun onResume() {
-        super.onResume()
-        webView.onResume()
+    override fun onStop() {
+        super.onStop()
+        CookieManager.getInstance().flush()
     }
 
     override fun onDestroy() {

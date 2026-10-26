@@ -6,24 +6,35 @@ A hybrid WhatsApp client:
    with a desktop Chrome user agent, so you can link by **QR code** or by
    **phone-number pairing code**.
 2. The session stays alive in the WebView (cookies + DOM storage + IndexedDB of the
-   normal, non-incognito WebView profile, plus `WebView.saveState`/`restoreState`), so
-   requesting and entering a pairing code never logs you out.
+   normal, non-incognito WebView profile). Every cold start re-loads the official page
+   so WhatsApp Web restores the linked session itself; the cookies are flushed on
+   pause/stop and persistent storage is requested so the session's IndexedDB is not
+   evicted. Requesting and entering a pairing code therefore never logs you out.
 3. After the page loads, the **WPPConnect `wa-js` bundle**
-   (`@wppconnect/wa-js@4.3.0`, vendored in `app/src/main/assets/wppconnect-wa.js`) is
-   injected into the live page and we wait for `WPP.webpack.onReady` /
-   the WhatsApp main UI (`#pane-side`) to appear — that means linking is complete.
+   (`@wppconnect/wa-js@4.7.2`, vendored in `app/src/main/assets/wppconnect-wa.js`) is
+   injected into the live page. wa-js 4.x has no `WPP.webpack`: the loader (`WPP.loader`),
+   the connection events (`conn.main_ready`, `conn.authenticated`, `conn.logout`) and the
+   WhatsApp main UI (`#pane-side`) are used to detect that linking is complete.
 4. The official UI is then **hidden with CSS only** (the WhatsApp engine keeps running
    in the page — nothing is removed from the DOM and the page is never reloaded) and a
    **custom mobile chat UI** (`custom-ui.html` / `custom-ui.css` / `custom-ui.js`) is
    injected on top, driven by `WPP.chat.list()`, `WPP.chat.getMessages()`,
-   `WPP.chat.sendTextMessage()`, `WPP.on('chat.new_message')` and
-   `WPP.on('chat.unread_count_changed')`.
+   `WPP.chat.sendTextMessage()`, `WPP.on('chat.new_message')`,
+   `WPP.on('chat.msg_ack_change')` and `WPP.on('chat.unread_count_changed')`.
+
+Conversations are read from every source the engine offers — `WPP.chat.getMessages()`
+(anchored, then unanchored, on both the `@c.us` and `@lid` id of the chat) and the live
+stores (`ChatStore`/`MsgStore`) — merged and de-duplicated. If a thread still comes back
+empty the hidden official UI is asked to open that chat so WhatsApp hydrates it. Sends go
+through `WPP.chat.sendTextMessage()` and are retried against the `@c.us`/`@lid`
+counterpart and `WPP.chat.find()` before a bubble is ever marked "Not sent" (with the
+engine's own error text), so a failed send can no longer look successful.
 
 ## Project layout
 
 ```
 app/src/main/java/com/hybrid/webchat/MainActivity.kt   # WebView + persistence + injection
-app/src/main/assets/wppconnect-wa.js                   # WPPConnect wa-js 4.3.0 (vendored UMD bundle)
+app/src/main/assets/wppconnect-wa.js                   # WPPConnect wa-js 4.7.2 (vendored UMD bundle)
 app/src/main/assets/custom-ui.html                     # injected mobile chat UI markup
 app/src/main/assets/custom-ui.css                      # injected WhatsApp-style theme
 app/src/main/assets/custom-ui.js                       # WPP bridge + rendering + sending
@@ -49,6 +60,9 @@ Requires JDK 17. No external Android dependencies are used.
   native banner at the top of the screen, while the WebView session stays untouched.
 - When the link completes, `#pane-side` (the chat pane) appears, the official UI is
   hidden and the custom UI takes over automatically.
+- If the phone unlinks this device (`conn.logout`, or the chat pane disappears while the
+  engine reports an unauthenticated session), the overlay is removed and the official
+  linking screen is shown again instead of a dead chat list.
 
 ## Disclaimer
 

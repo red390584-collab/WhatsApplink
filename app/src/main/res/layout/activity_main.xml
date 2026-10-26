@@ -31,4 +31,20 @@
         android:textSize="15sp"
         android:visibility="gone" />
 
+    <!-- Main-frame load failure: without this a network error just leaves a black screen. -->
+    <TextView
+        android:id="@+id/errorView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#0b141a"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center"
+        android:lineSpacingExtra="6dp"
+        android:padding="32dp"
+        android:text="@string/load_error"
+        android:textColor="#e9edef"
+        android:textSize="15sp"
+        android:visibility="gone" />
+
 </FrameLayout>

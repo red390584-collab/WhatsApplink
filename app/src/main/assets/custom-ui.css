@@ -428,6 +428,20 @@
   line-height: 1.5;
 }
 
+#wv-root .wa-retry {
+  margin-top: 16px;
+  padding: 9px 22px;
+  border-radius: 20px;
+  background: var(--wa-green);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#wv-root .wa-retry:active {
+  background: var(--wa-green-dark);
+}
+
 /* ---------- floating "new chat" button ---------- */
 
 #wv-root .wa-fab {
@@ -604,6 +618,11 @@
 }
 
 #wv-root .wa-bubble.wa-failed .wa-bubble-time {
+  color: #c0392b;
+  font-weight: 600;
+}
+
+#wv-root .wa-fail-flag {
   color: #c0392b;
   font-weight: 600;
 }
