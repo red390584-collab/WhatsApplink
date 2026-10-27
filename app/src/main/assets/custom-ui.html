@@ -62,6 +62,19 @@
         <svg class="wa-row-chev" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
       </button>
 
+      <button class="wa-statusrow" id="btn-channels" type="button">
+        <span class="wa-chan-tile" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M18 11a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h1v3h2v-3h1a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2h-1V9a3 3 0 0 0-3-3 3 3 0 0 0-3 3H8a4 4 0 0 1 4-4 4 4 0 0 1 4 4h-2v2h2zm-9 8H5a2 2 0 0 1-2-2v-4h2v4h4zM5 5h2v4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
+        </span>
+        <span class="wa-row-mid">
+          <span class="wa-row-top"><span class="wa-row-name">Channels</span></span>
+          <span class="wa-row-bottom">
+            <span class="wa-row-prev"><span class="wa-row-prev-text" id="chan-row-sub">Follow channels to get their updates</span></span>
+          </span>
+        </span>
+        <svg class="wa-row-chev" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M8.59 16.59 13.17 12 8.59 7.41 10 6l6 6-6 6z"/></svg>
+      </button>
+
       <div class="wa-list" id="chat-list">
         <div class="wa-empty">
           <div class="wa-empty-art">
@@ -127,7 +140,14 @@
         </button>
       </div>
 
-      <div class="wa-composer">
+      <!-- channels are broadcast: read + react, no composer -->
+      <div class="wa-channelbar" id="channelbar" hidden>
+        <button class="wa-chanbtn" id="ch-follow" type="button">Follow</button>
+        <button class="wa-chanbtn wa-chanbtn-ghost" id="ch-mute" type="button">Mute</button>
+        <span class="wa-chan-meta" id="ch-meta"></span>
+      </div>
+
+      <div class="wa-composer" id="composer">
         <div class="wa-inputbox">
           <input id="msg-input" type="text" placeholder="Message" autocomplete="off" spellcheck="false" enterkeyhint="send">
         </div>
@@ -152,6 +172,23 @@
     <!-- ================= status updates ================= -->
     <section class="wa-pane" id="status-pane" hidden>
       <div class="wa-list" id="status-list"></div>
+    </section>
+
+    <!-- ================= channels ================= -->
+    <section class="wa-pane" id="channels-pane" hidden>
+      <div class="wa-chan-search">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <input id="chan-search" type="text" placeholder="Find channels" autocomplete="off" spellcheck="false">
+        <button class="wa-ic-sm" id="btn-chan-search-close" type="button" aria-label="Clear channel search" hidden>
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <div class="wa-list" id="channel-list"></div>
+    </section>
+
+    <!-- ================= archived chats ================= -->
+    <section class="wa-pane" id="archived-pane" hidden>
+      <div class="wa-list" id="archived-list"></div>
     </section>
 
     <!-- ================= settings ================= -->
@@ -223,6 +260,14 @@
   <div class="wa-scrim" id="sheet-scrim" hidden></div>
   <div class="wa-sheet" id="sheet" hidden>
     <div class="wa-sheet-preview" id="sheet-preview"></div>
+    <div class="wa-react-row" id="sheet-react">
+      <button class="wa-react-emoji" type="button" data-emoji="👍" aria-label="React with thumbs up">👍</button>
+      <button class="wa-react-emoji" type="button" data-emoji="❤️" aria-label="React with heart">❤️</button>
+      <button class="wa-react-emoji" type="button" data-emoji="😂" aria-label="React with joy">😂</button>
+      <button class="wa-react-emoji" type="button" data-emoji="😮" aria-label="React with surprised">😮</button>
+      <button class="wa-react-emoji" type="button" data-emoji="😢" aria-label="React with crying face">😢</button>
+      <button class="wa-react-emoji" type="button" data-emoji="🙏" aria-label="React with folded hands">🙏</button>
+    </div>
     <button class="wa-sheet-btn" id="sheet-reply" type="button">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M10 9V5l-7 7 7 7v-4.1c4.53 0 7.74 1.42 10 4.9 1-4.47-4-10.5-10-10.5z"/></svg>
       Reply
@@ -231,7 +276,33 @@
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>
       Copy text
     </button>
+    <button class="wa-sheet-btn" id="sheet-forward" type="button">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M14 9V5l7 7-7 7v-4.1c-4.53 0-7.74 1.42-10 4.9 1-4.47 4-10.5 10-10.5z"/></svg>
+      Forward
+    </button>
+    <button class="wa-sheet-btn" id="sheet-star" type="button">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="m12 17.27 5.18 3.13-1.37-5.89 4.57-3.96-6.02-.51L12 4.5 9.64 10.04l-6.02.51 4.57 3.96-1.37 5.89z"/></svg>
+      <span id="sheet-star-label">Star</span>
+    </button>
+    <button class="wa-sheet-btn" id="sheet-delete" type="button">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+      <span id="sheet-delete-label">Delete</span>
+    </button>
     <button class="wa-sheet-btn" id="sheet-cancel" type="button">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      Cancel
+    </button>
+  </div>
+
+  <!-- ================= chat row (long-press) sheet ================= -->
+  <div class="wa-scrim" id="rowsheet-scrim" hidden></div>
+  <div class="wa-sheet" id="rowsheet" hidden>
+    <div class="wa-sheet-title" id="rowsheet-title">Chat</div>
+    <button class="wa-sheet-btn" id="row-pin" type="button"><span id="row-pin-label">Pin</span></button>
+    <button class="wa-sheet-btn" id="row-archive" type="button"><span id="row-archive-label">Archive</span></button>
+    <button class="wa-sheet-btn" id="row-mute" type="button"><span id="row-mute-label">Mute</span></button>
+    <button class="wa-sheet-btn" id="row-unread" type="button">Mark as unread</button>
+    <button class="wa-sheet-btn" id="row-cancel" type="button">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
       Cancel
     </button>
@@ -248,6 +319,10 @@
     <button class="wa-sheet-btn" id="menu-newchat" type="button">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M15 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-2.7 0-8 1.34-8 4v2h10.4a6 6 0 0 1 4.6-4zM19 9h-2v3h-3v2h3v3h2v-3h3v-2h-3z"/></svg>
       New chat
+    </button>
+    <button class="wa-sheet-btn" id="menu-channels" type="button">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M18 11a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h1v3h2v-3h1a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2h-1V9a3 3 0 0 0-3-3 3 3 0 0 0-3 3H8a4 4 0 0 1 4-4 4 4 0 0 1 4 4h-2v2h2zm-9 8H5a2 2 0 0 1-2-2v-4h2v4h4zM5 5h2v4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
+      Channels
     </button>
     <button class="wa-sheet-btn" id="menu-settings" type="button">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M19.14 12.94a7.07 7.07 0 0 0 0-1.88l2-1.55a.5.5 0 0 0 .12-.64l-1.9-3.28a.5.5 0 0 0-.61-.22l-2.36.95a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.24-1.12.55-1.62.94l-2.36-.95a.5.5 0 0 0-.61.22L2.62 8.87a.5.5 0 0 0 .12.64l2 1.55a7.07 7.07 0 0 0 0 1.88l-2 1.55a.5.5 0 0 0-.12.64l1.9 3.28c.13.22.39.31.61.22l2.36-.95c.5.39 1.04.7 1.62.94l.36 2.54c.04.24.25.42.5.42h3.8c.25 0 .46-.18.5-.42l.36-2.54c.58-.24 1.12-.55 1.62-.94l2.36.95c.22.09.48 0 .61-.22l1.9-3.28a.5.5 0 0 0-.12-.64zM12 15.5A3.5 3.5 0 1 1 15.5 12 3.5 3.5 0 0 1 12 15.5z"/></svg>

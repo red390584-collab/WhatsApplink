@@ -1337,3 +1337,223 @@
 
 #wv-root .wa-viewer-prev { left: 0; }
 #wv-root .wa-viewer-next { right: 0; }
+
+/* ================= media inside a bubble ================= */
+
+#wv-root .wa-media .wa-bubble-text {
+  font-style: normal;
+}
+
+#wv-root .wa-bubble-media {
+  position: relative;
+  margin: -1px 0 3px;
+  border-radius: 6px;
+  overflow: hidden;
+  max-width: 100%;
+  background: var(--wa-quote);
+  line-height: 0;
+}
+
+#wv-root .wa-bubble-media img,
+#wv-root .wa-bubble-media video {
+  display: block;
+  width: 232px;
+  max-width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  background: #0b141a;
+}
+
+#wv-root .wa-bubble-media video { max-height: 300px; }
+
+#wv-root .wa-bubble-media audio {
+  display: block;
+  width: 216px;
+  max-width: 100%;
+  height: 36px;
+}
+
+#wv-root .wa-bubble-media .wa-media-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 210px;
+  height: 110px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--wa-muted);
+}
+
+#wv-root .wa-bubble-media .wa-media-spin {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--wa-line);
+  border-top-color: var(--wa-green);
+  border-radius: 50%;
+  animation: wa-spin 0.8s linear infinite;
+}
+
+@keyframes wa-spin { to { transform: rotate(360deg); } }
+
+/* reactions shown under the message text */
+#wv-root .wa-react-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+#wv-root .wa-react-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: var(--wa-quote);
+  border: 1px solid var(--wa-line);
+  border-radius: 12px;
+  padding: 0 7px;
+  font-size: 12.5px;
+  line-height: 19px;
+  color: var(--wa-ink-soft);
+}
+
+#wv-root .wa-react-chip[data-mine="1"] {
+  border-color: var(--wa-green);
+  background: var(--wa-out);
+}
+
+/* ================= channels ================= */
+
+#wv-root .wa-chan-tile {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--wa-out);
+  color: var(--wa-green-dark);
+}
+
+#wv-root .wa-chan-av {
+  background: var(--wa-out) !important;
+  color: var(--wa-green-dark);
+  border-radius: 11px;
+  font-size: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#wv-root .wa-chan-search {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 13px;
+  background: var(--wa-panel);
+  border-bottom: 1px solid var(--wa-line);
+  color: var(--wa-muted);
+}
+
+#wv-root .wa-chan-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  font-size: 15px;
+  color: var(--wa-ink);
+}
+
+#wv-root .wa-chan-search input::placeholder { color: var(--wa-muted); }
+
+#wv-root .wa-channelbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  background: var(--wa-rail);
+  border-top: 1px solid var(--wa-line);
+  z-index: 2;
+}
+
+#wv-root .wa-chanbtn {
+  padding: 9px 20px;
+  border-radius: 20px;
+  background: var(--wa-green-dark);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  transition: opacity 0.12s ease;
+}
+
+#wv-root .wa-chanbtn:active { opacity: 0.7; }
+
+#wv-root .wa-chanbtn-ghost {
+  background: transparent;
+  color: var(--wa-ink-soft);
+  border: 1px solid var(--wa-line);
+}
+
+#wv-root .wa-chan-meta {
+  margin-left: auto;
+  color: var(--wa-muted);
+  font-size: 12.5px;
+  text-align: right;
+}
+
+/* ================= action-sheet reaction row ================= */
+
+#wv-root .wa-react-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px 6px 10px;
+  border-bottom: 1px solid var(--wa-line);
+  margin-bottom: 6px;
+}
+
+#wv-root .wa-react-emoji {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 23px;
+  line-height: 40px;
+  text-align: center;
+  transition: transform 0.12s ease, background-color 0.12s ease;
+}
+
+#wv-root .wa-react-emoji:active {
+  transform: scale(1.28);
+  background: var(--wa-press);
+}
+
+/* ---------- channel info + misc ---------- */
+
+#wv-root .wa-info-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 12px 4px;
+}
+
+#wv-root .wa-mute {
+  color: var(--wa-muted);
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-left: 5px;
+}
+
+#wv-root .wa-archived-row .wa-row-name { color: var(--wa-green-dark); }
+
+#wv-root .wa-star {
+  color: #f0ad00;
+  display: inline-flex;
+  align-items: center;
+  margin-right: 3px;
+}

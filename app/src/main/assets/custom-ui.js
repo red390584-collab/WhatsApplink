@@ -171,7 +171,9 @@
     tick: '<svg viewBox="0 0 20 14" width="16" height="12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M1 8.2 4.3 11.5 12.6 3"/></svg>',
     tick2: '<svg viewBox="0 0 20 14" width="18" height="12" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M1 8.2 4.3 11.5 12.6 3"/><path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" d="M7.3 8.2 10.6 11.5 18.9 3"/></svg>',
     clock: '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><circle cx="8" cy="8" r="6.1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.7V8l2.3 1.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-    pin: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M14.5 2h5v2h-1.2l2.2 6.1-3.6 3.6H13v6.1l-1 1.2-1-1.2V13.7H7.1L3.5 10.1 5.7 4H4.5V2h10z"/></svg>'
+    pin: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M14.5 2h5v2h-1.2l2.2 6.1-3.6 3.6H13v6.1l-1 1.2-1-1.2V13.7H7.1L3.5 10.1 5.7 4H4.5V2h10z"/></svg>',
+    mute: '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M16.5 12A4.5 4.5 0 0 0 14 7.97v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.8 8.8 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3 3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4 9.91 6.09 12 8.18V4z"/></svg>',
+    star: '<svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="m12 17.27 5.18 3.13-1.37-5.89 4.57-3.96-6.02-.51L12 4.5 9.64 10.04l-6.02.51 4.57 3.96-1.37 5.89z"/></svg>'
   };
 
   /** Static-markup icon element (never built from user data). */
@@ -201,7 +203,23 @@
   var locallyRead = Object.create(null); // id -> true while the engine still reports unread
   var sheetText = '';
   var sheetMsg = null;                     // message behind the open action sheet
-  var view = 'list'; // 'list' | 'chat' | 'contacts' | 'settings' | 'info' | 'status'
+  var view = 'list'; // 'list' | 'chat' | 'contacts' | 'settings' | 'info' | 'status' | 'channels' | 'archived'
+
+  // ---- channels -------------------------------------------------------
+  var channels = [];                      // channels the account follows
+  var channelById = Object.create(null);
+  var chanQuery = '';                     // text typed into the channel search field
+  var channelMeta = null;                 // live engine model of the open channel
+
+  // ---- message / chat actions ----------------------------------------
+  var forwardTarget = null;               // message key while the picker forwards
+  var rowSheetChat = null;                // chat behind the long-press row sheet
+  var deleteArmedAt = 0;                  // a second tap inside 4s deletes for everyone
+  var rowLpAt = 0;                        // a row long-press swallows the click that follows
+  var mediaCache = Object.create(null);   // message key -> object URL
+  var reactionDone = Object.create(null); // message key -> reactions already fetched
+  var reactionBusy = 0;
+  var typingSentAt = 0;
 
   var avatarCache = Object.create(null);   // id -> url | null | 'pending'
   var avatarWaiters = Object.create(null); // id -> [nodes]
@@ -222,7 +240,7 @@
   var statusData = [];                     // [{ id, name, me, msgs: [] }]
   var statusSeen = Object.create(null);    // id -> true while viewed this session
   var statusMedia = Object.create(null);   // status msg key -> object URL
-  var viewerState = { entries: [], gi: 0, mi: 0, timer: null, dur: 5200, running: false };
+  var viewerState = { entries: [], gi: 0, mi: 0, timer: null, dur: 5200, running: false, seq: 0 };
   var STATUS_TTL = 86400;                  // statuses older than 24h are not shown
   var meWid = null;
 
@@ -390,6 +408,9 @@
       isGroup: !!c.isGroup || isGroupId(id),
       unread: c.unreadCount || 0,
       pinned: !!c.pinned,
+      archived: !!c.archive,
+      muted: !!(c.mute && (c.mute.isMuted === true ||
+        (Number(c.mute.expiration) || 0) > Math.floor(Date.now() / 1000))),
       ts: c.t || (lm && (lm.t || lm.timestamp)) || 0,
       preview: previewOf(lm),
       lastFromMe: !!(lm && lm.fromMe),
@@ -407,10 +428,13 @@
     return {
       key: key,
       fromMe: !!m.fromMe,
-      body: m.body || '',
+      body: m.body || m.caption || '',
       text: msgText(m),
       ts: m.t || m.timestamp || Math.floor(Date.now() / 1000),
       type: m.type || 'chat',
+      mimetype: m.mimetype || (m.mediaData && m.mediaData.mimetype) || '',
+      filename: m.filename || '',
+      starred: !!m.starred,
       ack: (typeof m.ack === 'number') ? m.ack : undefined,
       sender: m.author || m.from || m.to || '',
       quoted: readQuoted(m)
@@ -597,7 +621,8 @@
     if (!listEl) { return; }
     var scrolledTop = listEl.scrollTop;
     var q = filterText.toLowerCase().trim();
-    var items = chats.filter(function (c) {
+    var visible = chats.filter(function (c) { return !c.archived; });
+    var items = visible.filter(function (c) {
       if (!q) { return true; }
       return (c.name || '').toLowerCase().indexOf(q) >= 0 ||
         (c.preview || '').toLowerCase().indexOf(q) >= 0 ||
@@ -609,6 +634,7 @@
       listEl.appendChild(chats.length
         ? emptyState('No chats found', 'Try a different name or number.')
         : emptyState('No chats yet', 'Start a conversation with the + button.'));
+      if (!q) { appendArchivedRow(listEl); }
       return;
     }
 
@@ -617,7 +643,44 @@
     // search still runs over the full list.
     items.slice(0, 500).forEach(function (c) { frag.appendChild(buildRow(c)); });
     listEl.appendChild(frag);
+    if (!q) { appendArchivedRow(listEl); }
     listEl.scrollTop = scrolledTop;
+  }
+
+  /** "Archived" entry at the foot of the chat list, like the official app. */
+  function appendArchivedRow(listEl) {
+    var n = 0;
+    for (var i = 0; i < chats.length; i++) { if (chats[i].archived) { n++; } }
+    if (!n) { return; }
+    var row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'wa-statusrow wa-archived-row';
+    var tile = document.createElement('span');
+    tile.className = 'wa-chan-tile';
+    tile.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M20.54 5.23 19.15 3.55A1.5 1.5 0 0 0 18 3H6a1.5 1.5 0 0 0-1.16.55L3.46 5.23A2 2 0 0 0 3 6.5V19a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6.5a2 2 0 0 0-.46-1.27zM12 17.5 6.5 12H10v-2h4v2h3.5L12 17.5zM5.12 5l.81-1h12l.94 1H5.12z"/></svg>';
+    row.appendChild(tile);
+    var mid = document.createElement('span');
+    mid.className = 'wa-row-mid';
+    var top = document.createElement('span');
+    top.className = 'wa-row-top';
+    var nm = document.createElement('span');
+    nm.className = 'wa-row-name';
+    nm.textContent = 'Archived';
+    top.appendChild(nm);
+    var bottom = document.createElement('span');
+    bottom.className = 'wa-row-bottom';
+    var prev = document.createElement('span');
+    prev.className = 'wa-row-prev';
+    var txt = document.createElement('span');
+    txt.className = 'wa-row-prev-text';
+    txt.textContent = n + (n === 1 ? ' chat' : ' chats');
+    prev.appendChild(txt);
+    bottom.appendChild(prev);
+    mid.appendChild(top);
+    mid.appendChild(bottom);
+    row.appendChild(mid);
+    row.addEventListener('click', showArchived);
+    listEl.appendChild(row);
   }
 
   function avatarNode(id, name, isGroup) {
@@ -647,6 +710,7 @@
     name.textContent = c.name;
     top.appendChild(name);
     if (c.pinned) { top.appendChild(icon('pin', 'wa-pin')); }
+    if (c.muted) { top.appendChild(icon('mute', 'wa-mute')); }
     var time = document.createElement('span');
     time.className = 'wa-row-time';
     time.textContent = fmtTime(c.ts);
@@ -678,8 +742,457 @@
     mid.appendChild(bottom);
     row.appendChild(mid);
 
-    row.addEventListener('click', function () { openChat(c.id, c.name, c.isGroup); });
+    row.addEventListener('click', function () {
+      // A long-press just opened the actions sheet: it must not open the chat too.
+      if (Date.now() - rowLpAt < 700) { return; }
+      openChat(c.id, c.name, c.isGroup);
+    });
+    bindRowGestures(row, c);
     return row;
+  }
+
+  /** Long-press a chat row for pin / archive / mute / mark-unread. */
+  function bindRowGestures(el, c) {
+    var lpTimer = null;
+    var startY = 0;
+    var alive = false;
+
+    function cancel() {
+      if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; }
+      alive = false;
+    }
+
+    el.addEventListener('pointerdown', function (e) {
+      if (e.button && e.button !== 0) { return; }
+      startY = e.clientY;
+      cancel();
+      alive = true;
+      lpTimer = setTimeout(function () {
+        lpTimer = null;
+        alive = false;
+        rowLpAt = Date.now();
+        openRowSheet(c);
+      }, 480);
+    });
+    el.addEventListener('pointermove', function (e) {
+      if (!alive) { return; }
+      if (Math.abs(e.clientY - startY) > 12) { cancel(); }
+    });
+    el.addEventListener('pointerup', cancel);
+    el.addEventListener('pointercancel', cancel);
+    el.addEventListener('pointerleave', cancel);
+    el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }
+
+  // ---------------------------------------------------------------------
+  // chat actions (long-press sheet) + archived
+  // ---------------------------------------------------------------------
+
+  function openRowSheet(c) {
+    if (!c) { return; }
+    rowSheetChat = c;
+    deleteArmedAt = 0;
+    var title = $('rowsheet-title');
+    if (title) { title.textContent = c.name || 'Chat'; }
+    setLabel('row-pin-label', c.pinned ? 'Unpin' : 'Pin');
+    setLabel('row-archive-label', c.archived ? 'Unarchive' : 'Archive');
+    setLabel('row-mute-label', c.muted ? 'Unmute' : 'Mute');
+    var scrim = $('rowsheet-scrim');
+    var sheet = $('rowsheet');
+    if (scrim) { scrim.hidden = false; }
+    if (sheet) { sheet.hidden = false; }
+  }
+
+  function closeRowSheet() {
+    var scrim = $('rowsheet-scrim');
+    var sheet = $('rowsheet');
+    if (scrim) { scrim.hidden = true; }
+    if (sheet) { sheet.hidden = true; }
+    rowSheetChat = null;
+  }
+
+  function setLabel(id, text) {
+    var el = $(id);
+    if (el) { el.textContent = text; }
+  }
+
+  /** Re-renders whichever chat list is on screen. */
+  function refreshLists() {
+    if (view === 'archived') { renderArchived(); return; }
+    renderList();
+  }
+
+  /** Runs a chat action and re-syncs the list; engine errors are toasted, never thrown. */
+  function chatAction(kind) {
+    var c = rowSheetChat;
+    var api = chatApi();
+    if (!c || !api) { closeRowSheet(); return; }
+    var id = (c.engineId || c.id);
+    var run;
+    switch (kind) {
+      case 'pin': run = c.pinned ? api.unpin : api.pin; break;
+      case 'archive': run = c.archived ? api.unarchive : api.archive; break;
+      case 'mute': run = c.muted ? api.unmute : api.mute; break;
+      default: run = null;
+    }
+    closeRowSheet();
+    if (!run) { return; }
+    Promise.resolve()
+      .then(function () {
+        if (kind === 'mute' && !c.muted) { return run.call(api, id, { duration: 86400 * 365 }); }
+        return run.call(api, id);
+      })
+      .then(function () {
+        if (kind === 'archive') {
+          // WhatsApp drops the row from the list the moment it is archived.
+          c.archived = !c.archived;
+        } else if (kind === 'pin') { c.pinned = !c.pinned; }
+        else if (kind === 'mute') { c.muted = !c.muted; }
+        refreshLists();
+        toast('Done');
+        scheduleSoftRefresh();
+      })
+      .catch(function (e) {
+        log('chatAction ' + kind + ' failed: ' + e);
+        toast('Could not do that just now');
+        scheduleSoftRefresh();
+      });
+  }
+
+  function markUnread() {
+    var c = rowSheetChat;
+    var api = chatApi();
+    closeRowSheet();
+    if (!c || !api || typeof api.markIsUnread !== 'function') { return; }
+    delete locallyRead[c.id];
+    c.unread = Math.max(1, c.unread || 0);
+    refreshLists();
+    Promise.resolve()
+      .then(function () { return api.markIsUnread(c.engineId || c.id); })
+      .catch(function (e) { log('markIsUnread failed: ' + e); });
+  }
+
+  function showArchived() {
+    view = 'archived';
+    hideAllPanes();
+    if ($('archived-pane')) { $('archived-pane').hidden = false; }
+    setHeader({ title: 'Archived', back: true, search: false, refresh: true });
+    setUiState('pane');
+    renderArchived();
+  }
+
+  function renderArchived() {
+    var el = $('archived-list');
+    if (!el) { return; }
+    el.textContent = '';
+    var items = chats.filter(function (c) { return c.archived; });
+    if (!items.length) {
+      el.appendChild(emptyState('No archived chats', 'Long-press a chat and choose Archive to move it here.'));
+      return;
+    }
+    var frag = document.createDocumentFragment();
+    items.forEach(function (c) { frag.appendChild(buildRow(c)); });
+    el.appendChild(frag);
+  }
+
+  // ---------------------------------------------------------------------
+  // channels (WhatsApp newsletters)
+  // ---------------------------------------------------------------------
+
+  /** Channels live in their own store, but the chat index needs them too so
+   *  message events for an open channel resolve to the right conversation. */
+  function mergeChannelIndex() {
+    for (var i = 0; i < channels.length; i++) { chatById[channels[i].id] = channels[i]; }
+  }
+
+  /** Newsletter models differ between engine versions: read every known field. */
+  function normalizeChannel(raw) {
+    if (!raw) { return null; }
+    var id = idStr(raw.id);
+    if (!id) { return null; }
+    var lm = raw.lastMessage || raw.previewMsg || raw.ticker || null;
+    var st = null;
+    try { st = raw.state || null; } catch (e) { st = null; }
+    var following = false;
+    var muted = false;
+    var unread = 0;
+    try {
+      following = !!(raw.followed || raw.isFollowing || raw.following ||
+        raw.viewerIsFollowed ||
+        (st && (st.followed || st.following || st.type === 'FOLLOWED')));
+      muted = !!(raw.muted || raw.isMuted || (st && st.muted));
+      unread = Number(raw.unreadCount || raw.unseenMsgCount || raw.unread || 0) || 0;
+    } catch (e) {}
+    var ts = Number(raw.t || raw.timestamp || (lm && (lm.t || lm.timestamp)) || 0) || 0;
+    return {
+      id: id,
+      engineId: id,
+      user: '',
+      name: raw.name || raw.subject || raw.announcementName || 'Channel',
+      isGroup: false,
+      isChannel: true,
+      unread: unread,
+      pinned: false,
+      archived: false,
+      muted: muted,
+      following: following,
+      ts: ts,
+      preview: previewOf(lm),
+      lastFromMe: false,
+      desc: raw.description || '',
+      members: Number(raw.subscribers || raw.members || 0) || 0,
+      obj: raw
+    };
+  }
+
+  function newsletterModels() {
+    var store = waStore();
+    var ns = store && store.NewsletterStore;
+    if (!ns || typeof ns.getModelsArray !== 'function') { return []; }
+    try { return ns.getModelsArray() || []; } catch (e) { return []; }
+  }
+
+  function loadChannels() {
+    var api = chatApi();
+    if (!api || typeof api.list !== 'function') { return Promise.resolve(channels); }
+    return Promise.resolve()
+      .then(function () { return api.list({ onlyNewsletter: true }); })
+      .then(function (raw) {
+        var arr = Array.isArray(raw) ? raw : [];
+        if (!arr.length) { arr = newsletterModels(); }
+        var next = [];
+        var seen = Object.create(null);
+        arr.forEach(function (raw2) {
+          var n = normalizeChannel(raw2);
+          if (!n || seen[n.id]) { return; }
+          seen[n.id] = true;
+          next.push(n);
+        });
+        next.sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); });
+        channels = next;
+        channelById = Object.create(null);
+        channels.forEach(function (c) { channelById[c.id] = c; });
+        mergeChannelIndex();
+        updateChannelsRow();
+        if (view === 'channels') { renderChannels(); }
+        if (view === 'chat' && openChatId) { paintChannelBar(); }
+        return channels;
+      })
+      .catch(function (e) {
+        log('loadChannels failed: ' + e);
+        return channels;
+      });
+  }
+
+  function updateChannelsRow() {
+    var sub = $('chan-row-sub');
+    if (!sub) { return; }
+    if (!channels.length) { sub.textContent = 'Follow channels to get their updates'; return; }
+    var n = channels.length;
+    var unread = 0;
+    channels.forEach(function (c) { unread += c.unread || 0; });
+    sub.textContent = unread
+      ? (unread + ' new update' + (unread === 1 ? '' : 's'))
+      : (n + ' channel' + (n === 1 ? '' : 's'));
+  }
+
+  function showChannels() {
+    view = 'channels';
+    hideAllPanes();
+    if ($('channels-pane')) { $('channels-pane').hidden = false; }
+    setHeader({ title: 'Channels', back: true, search: false, refresh: true });
+    setUiState('pane');
+    renderChannels();
+    loadChannels();
+  }
+
+  function channelTile(sizeClass) {
+    var tile = document.createElement('span');
+    tile.className = 'wa-avatar' + (sizeClass ? ' ' + sizeClass : '') + ' wa-chan-av';
+    tile.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M18 11a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h1v3h2v-3h1a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2h-1V9a3 3 0 0 0-3-3 3 3 0 0 0-3 3H8a4 4 0 0 1 4-4 4 4 0 0 1 4 4h-2v2h2zm-9 8H5a2 2 0 0 1-2-2v-4h2v4h4zM5 5h2v4H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>';
+    return tile;
+  }
+
+  function renderChannels() {
+    var el = $('channel-list');
+    if (!el) { return; }
+    var q = chanQuery.toLowerCase().trim();
+    var items = channels.filter(function (c) {
+      if (!q) { return true; }
+      return (c.name || '').toLowerCase().indexOf(q) >= 0;
+    });
+
+    el.textContent = '';
+    if (!items.length) {
+      el.appendChild(channels.length
+        ? emptyState('No channels found', 'Try a different name.')
+        : emptyState(q ? 'Searching…' : 'No channels yet',
+          q ? 'Channels matching your search appear here.'
+            : 'Follow a channel and its updates show up here, just like WhatsApp.'));
+      if (q) { searchChannels(q); }
+      return;
+    }
+
+    var frag = document.createDocumentFragment();
+    items.forEach(function (c) {
+      var row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'wa-row' + (c.unread ? ' wa-row-unread' : '');
+      row.appendChild(channelTile());
+
+      var mid = document.createElement('span');
+      mid.className = 'wa-row-mid';
+      var top = document.createElement('span');
+      top.className = 'wa-row-top';
+      var name = document.createElement('span');
+      name.className = 'wa-row-name';
+      name.textContent = c.name;
+      top.appendChild(name);
+      if (c.muted) { top.appendChild(icon('mute', 'wa-mute')); }
+      var time = document.createElement('span');
+      time.className = 'wa-row-time';
+      time.textContent = c.ts ? fmtTime(c.ts) : '';
+      top.appendChild(time);
+
+      var bottom = document.createElement('span');
+      bottom.className = 'wa-row-bottom';
+      var prev = document.createElement('span');
+      prev.className = 'wa-row-prev';
+      var txt = document.createElement('span');
+      txt.className = 'wa-row-prev-text';
+      txt.textContent = c.preview || (c.following ? 'Following' : 'Not following');
+      prev.appendChild(txt);
+      bottom.appendChild(prev);
+      if (c.unread) {
+        var badge = document.createElement('span');
+        badge.className = 'wa-badge';
+        badge.textContent = c.unread > 99 ? '99+' : String(c.unread);
+        bottom.appendChild(badge);
+      }
+      mid.appendChild(top);
+      mid.appendChild(bottom);
+      row.appendChild(mid);
+      row.addEventListener('click', function () { openChat(c.id, c.name, false); });
+      frag.appendChild(row);
+    });
+    el.appendChild(frag);
+    if (q) { searchChannels(q); }
+  }
+
+  var chanSearchTimer = null;
+  var chanSearchToken = 0;
+
+  /** Server-side channel discovery; only runs for the settled search text. */
+  function searchChannels(q) {
+    var w = wpp();
+    if (!w || !w.newsletter || typeof w.newsletter.search !== 'function') { return; }
+    clearTimeout(chanSearchTimer);
+    var token = ++chanSearchToken;
+    chanSearchTimer = setTimeout(function () {
+      Promise.resolve()
+        .then(function () { return w.newsletter.search(q, {}); })
+        .then(function (res) {
+          if (token !== chanSearchToken || view !== 'channels') { return; }
+          var arr = [];
+          if (Array.isArray(res)) { arr = res; }
+          else if (res && Array.isArray(res.newsletters)) { arr = res.newsletters; }
+          else if (res && Array.isArray(res.results)) { arr = res.results; }
+          var added = false;
+          arr.forEach(function (raw) {
+            var n = normalizeChannel(raw);
+            if (!n || channelById[n.id]) { return; }
+            n.fromSearch = true;
+            channelById[n.id] = n;
+            channels.push(n);
+            added = true;
+          });
+          if (added) { renderChannels(); }
+        })
+        .catch(function (e) { log('channel search failed: ' + e); });
+    }, 450);
+  }
+
+  // --------------------------- channel thread ---------------------------
+
+  function isOpenChannel() {
+    return !!(openChatId && /@newsletter$/.test(openChatId));
+  }
+
+  function updateChannelBar() {
+    var isChan = isOpenChannel();
+    var bar = $('channelbar');
+    var composer = $('composer');
+    if (bar) { bar.hidden = !isChan; }
+    if (composer) { composer.hidden = isChan; }
+    if (!isChan) { channelMeta = null; return; }
+    paintChannelBar();
+  }
+
+  function liveChannelModel() {
+    var api = chatApi();
+    if (!api || typeof api.get !== 'function' || !openChatId) { return null; }
+    try { return api.get(openChatId); } catch (e) { return null; }
+  }
+
+  function paintChannelBar() {
+    if (!isOpenChannel()) { return; }
+    var c = channelById[openChatId] || chatById[openChatId] || null;
+    var model = liveChannelModel();
+    channelMeta = model;
+    var followBtn = $('ch-follow');
+    if (followBtn) { followBtn.textContent = (c && c.following) ? 'Following' : 'Follow'; }
+    var muteBtn = $('ch-mute');
+    if (muteBtn) { muteBtn.textContent = (c && c.muted) ? 'Unmute' : 'Mute'; }
+    var meta = $('ch-meta');
+    if (meta) {
+      var parts = [];
+      var members = 0;
+      try { members = Number((model && (model.subscribers || model.members)) || (c && c.members) || 0) || 0; } catch (e) {}
+      if (members) { parts.push(members + (members === 1 ? ' follower' : ' followers')); }
+      if (c && c.desc) { parts.push(String(c.desc).slice(0, 60)); }
+      meta.textContent = parts.join(' · ');
+    }
+  }
+
+  function toggleChannelFollow(id) {
+    var w = wpp();
+    id = id || openChatId;
+    if (!w || !w.newsletter || !id) { return; }
+    var c = channelById[id];
+    var next = !(c && c.following);
+    var fn = next ? w.newsletter.follow : w.newsletter.unfollow;
+    if (typeof fn !== 'function') { return; }
+    Promise.resolve()
+      .then(function () { return fn.call(w.newsletter, id); })
+      .then(function () {
+        if (c) { c.following = next; }
+        if (isOpenChannel()) { paintChannelBar(); }
+        if (view === 'channels') { renderChannels(); }
+        toast(next ? 'Following this channel' : 'Unfollowed');
+      })
+      .catch(function (e) {
+        log('channel follow failed: ' + e);
+        toast('Could not do that just now');
+      });
+  }
+
+  function toggleChannelMute(id) {
+    var w = wpp();
+    id = id || openChatId;
+    if (!w || !w.newsletter || typeof w.newsletter.mute !== 'function' || !id) { return; }
+    var c = channelById[id];
+    var next = !(c && c.muted);
+    Promise.resolve()
+      .then(function () { return w.newsletter.mute(id, next); })
+      .then(function () {
+        if (c) { c.muted = next; }
+        if (isOpenChannel()) { paintChannelBar(); }
+        toast(next ? 'Channel muted' : 'Channel unmuted');
+      })
+      .catch(function (e) {
+        log('channel mute failed: ' + e);
+        toast('Could not do that just now');
+      });
   }
 
   // ---------------------------------------------------------------------
@@ -714,6 +1227,7 @@
       chatById = Object.create(null);
       chats.forEach(function (c) { chatById[c.id] = c; });
       if (view === 'list') { renderList(); }
+      mergeChannelIndex();
       return chats;
     }).catch(function (e) {
       log('loadChats error: ' + e);
@@ -749,6 +1263,8 @@
     if ($('settings-pane')) { $('settings-pane').hidden = true; }
     if ($('info-pane')) { $('info-pane').hidden = true; }
     if ($('status-pane')) { $('status-pane').hidden = true; }
+    if ($('channels-pane')) { $('channels-pane').hidden = true; }
+    if ($('archived-pane')) { $('archived-pane').hidden = true; }
     clearReply();
     setHeader({ title: 'WhatsApp', back: false, search: true, refresh: true, menu: true });
     setUiState('list');
@@ -762,6 +1278,8 @@
     if ($('settings-pane')) { $('settings-pane').hidden = true; }
     if ($('info-pane')) { $('info-pane').hidden = true; }
     if ($('status-pane')) { $('status-pane').hidden = true; }
+    if ($('channels-pane')) { $('channels-pane').hidden = true; }
+    if ($('archived-pane')) { $('archived-pane').hidden = true; }
     if ($('searchwrap')) { $('searchwrap').hidden = true; }
   }
 
@@ -769,7 +1287,12 @@
     view = 'contacts';
     hideAllPanes();
     if ($('contacts-pane')) { $('contacts-pane').hidden = false; }
-    setHeader({ title: 'New chat', back: true, search: false, refresh: false });
+    setHeader({
+      title: forwardTarget ? 'Forward to' : 'New chat',
+      back: true,
+      search: false,
+      refresh: false
+    });
     setUiState('pane');
     loadContacts();
   }
@@ -794,7 +1317,7 @@
     if ($('chat-pane')) { $('chat-pane').hidden = true; }
     if ($('info-pane')) { $('info-pane').hidden = false; }
     if ($('list-pane')) { $('list-pane').hidden = true; }
-    setHeader({ title: c.isGroup ? 'Group info' : 'Contact info', back: true, search: false, refresh: false });
+    setHeader({ title: c.isChannel ? 'Channel info' : (c.isGroup ? 'Group info' : 'Contact info'), back: true, search: false, refresh: false });
     setUiState('pane');
     renderInfo(c);
   }
@@ -829,9 +1352,10 @@
   }
 
   function showChatHeader(c) {
+    var sub = c.isChannel ? 'Channel' : (c.isGroup ? 'Group' : ('+' + (c.user || '')));
     setHeader({
       title: c.name,
-      sub: c.isGroup ? 'Group' : ('+' + c.user),
+      sub: sub,
       back: true,
       search: false,
       refresh: false,
@@ -881,6 +1405,7 @@
     $('list-pane').hidden = true;
     $('contacts-pane').hidden = true;
     showChatHeader(c);
+    updateChannelBar();
     setUiState('chat');
 
     var msgsEl = $('messages');
@@ -1048,7 +1573,13 @@
     return out;
   }
 
-  /** getMessages, retried on every known id variant of the chat. */
+  /** getMessages, retried on every known id variant of the chat.
+   *
+   *  The engine's default window is anchored on the last *received* message, so the
+   *  messages we sent after it are invisible to that call - which is exactly why our
+   *  own sends used to vanish after a restart. Every fetch therefore also asks for
+   *  the tail after that anchor and the two windows are merged.
+   */
   function fetchMessages(api, ids, anchor) {
     var queue = (ids || []).slice();
 
@@ -1064,19 +1595,37 @@
     function attempt() {
       if (!queue.length) { return Promise.resolve([]); }
       var chatId = queue.shift();
-      // The default anchor is the newest message the engine knows, which is what a
-      // conversation should show; an explicit anchor is only a fallback for builds
-      // where that default anchor is missing.
-      return call(chatId, { count: 80 }).then(function (list) {
-        if (list.length) { return list; }
-        if (!anchor) { return attempt(); }
-        return call(chatId, { count: 80, id: anchor }).then(function (list2) {
-          return list2.length ? list2 : attempt();
+      return call(chatId, { count: 120 }).then(function (list) {
+        var tailKey = lastReceivedKeyOf([chatId]);
+        var tailP = tailKey
+          ? call(chatId, { count: 120, direction: 'after', id: tailKey })
+          : Promise.resolve([]);
+        var anchorP = (list.length || !anchor)
+          ? Promise.resolve([])
+          : call(chatId, { count: 120, id: anchor });
+        return Promise.all([tailP, anchorP]).then(function (r) {
+          var merged = list.concat(r[0], r[1]);
+          if (merged.length) { return merged; }
+          return attempt();
         });
       });
     }
 
     return attempt();
+  }
+
+  /** Newest message the engine has *received* in this chat - the default fetch anchor. */
+  function lastReceivedKeyOf(ids) {
+    for (var i = 0; i < (ids || []).length; i++) {
+      var m = chatModelOf(ids[i]);
+      var key = m && m.lastReceivedKey;
+      if (!key) { continue; }
+      try {
+        var s = String(key.toString ? key.toString() : key);
+        if (s && s !== 'null' && s !== 'undefined') { return s; }
+      } catch (e) {}
+    }
+    return '';
   }
 
   /**
@@ -1114,7 +1663,13 @@
     }
     // Keep the DOM light on accounts with very long threads.
     var shown = msgs.length > 400 ? msgs.slice(msgs.length - 400) : msgs;
-    shown.forEach(function (m) { appendBubble(m, false); });
+    bulkRendering = true;
+    try {
+      shown.forEach(function (m) { appendBubble(m, false); });
+    } finally {
+      bulkRendering = false;
+    }
+    hydrateRecentReactions(shown);
     scrollToEnd();
   }
 
@@ -1210,9 +1765,16 @@
       wrap.appendChild(lbl);
     }
 
+    var kind = mediaKindOf(m);
+    if (kind) { wrap.classList.add('wa-media'); }
+
     var body = document.createElement('div');
     body.className = 'wa-bubble-text';
-    body.textContent = m.text || m.body || '';
+    // Media keeps its caption as the text; a caption-less photo shows media only.
+    body.textContent = kind ? (m.body || '') : (m.text || m.body || '');
+    if (kind && !m.body) { body.hidden = true; }
+
+    if (kind) { wrap.appendChild(buildMediaNode(m, kind, body)); }
 
     // quoted (replied-to) message block, like WhatsApp
     var quote = m.quoted;
@@ -1240,6 +1802,7 @@
     t.className = 'wa-bubble-time';
     t.textContent = fmtTime(m.ts);
     meta.appendChild(t);
+    if (m.starred) { meta.appendChild(icon('star', 'wa-star')); }
     if (m.fromMe) {
       var tick = isTmp ? icon('clock') : tickFor(m);
       if (tick) { meta.appendChild(tick); }
@@ -1254,8 +1817,176 @@
 
     bindBubbleGestures(wrap, m);
 
+    if (!isTmp && !bulkRendering) { hydrateReactions(m, wrap); }
+
     msgsEl.appendChild(wrap);
     return wrap;
+  }
+
+  // ---------------------------------------------------------------------
+  // media + reactions inside a bubble
+  // ---------------------------------------------------------------------
+
+  /** Which kind of element a message's payload needs, or '' for plain text. */
+  function mediaKindOf(m) {
+    var t = String(m.type || '');
+    if (t === 'image' || t === 'sticker') { return 'image'; }
+    if (t === 'video' || t === 'gif') { return 'video'; }
+    if (t === 'audio' || t === 'ptt') { return 'audio'; }
+    if (t === 'media' || t === 'mms') {
+      var mime = String(m.mimetype || '');
+      if (/^video\//.test(mime)) { return 'video'; }
+      if (/^audio\//.test(mime)) { return 'audio'; }
+      if (/^image\//.test(mime)) { return 'image'; }
+    }
+    return '';
+  }
+
+  function buildMediaNode(m, kind, body) {
+    var box = document.createElement('div');
+    box.className = 'wa-bubble-media';
+    if (/^tmp-/.test(m.key)) { return box; }
+    var cached = mediaCache[m.key];
+    if (cached) {
+      mountMedia(box, kind, cached, m, body);
+      return box;
+    }
+    var label = document.createElement('div');
+    label.className = 'wa-media-loading';
+    var spin = document.createElement('span');
+    spin.className = 'wa-media-spin';
+    var txt = document.createElement('span');
+    txt.textContent = 'Loading…';
+    label.appendChild(spin);
+    label.appendChild(txt);
+    box.appendChild(label);
+
+    var api = chatApi();
+    if (!api || typeof api.downloadMedia !== 'function') {
+      showMediaFallback(box, body, m);
+      return box;
+    }
+    // Only fetch media that is actually close to the viewport: a long thread can
+    // hold hundreds of photos and downloading them all would stall the app.
+    var started = false;
+    var go = function () {
+      if (started) { return; }
+      started = true;
+      if (io) { try { io.disconnect(); } catch (e) {} }
+      Promise.resolve()
+        .then(function () { return api.downloadMedia(m.key); })
+        .then(function (blob) {
+          if (!blob) { throw new Error('empty media'); }
+          var url = URL.createObjectURL(blob);
+          mediaCache[m.key] = url;
+          mountMedia(box, kind, url, m, body);
+        })
+        .catch(function (e) {
+          log('media download failed for ' + m.key + ': ' + e);
+          showMediaFallback(box, body, m);
+        });
+    };
+    var io = null;
+    try {
+      if (typeof window.IntersectionObserver === 'function') {
+        io = new window.IntersectionObserver(function (entries) {
+          for (var i = 0; i < entries.length; i++) {
+            if (entries[i] && entries[i].isIntersecting) { go(); return; }
+          }
+        }, { rootMargin: '500px' });
+        io.observe(box);
+        setTimeout(go, 8000);
+      } else {
+        go();
+      }
+    } catch (e) {
+      go();
+    }
+    return box;
+  }
+
+  function showMediaFallback(box, body, m) {
+    if (!box) { return; }
+    if (box.isConnected) { box.hidden = true; }
+    if (body && body.isConnected) {
+      body.hidden = false;
+      if (!body.textContent) { body.textContent = msgText(m); }
+    }
+  }
+
+  function mountMedia(box, kind, url, m, body) {
+    if (!box || !box.isConnected) { return; }
+    box.textContent = '';
+    var el;
+    if (kind === 'video') {
+      el = document.createElement('video');
+      el.controls = true;
+      el.preload = 'metadata';
+      el.setAttribute('playsinline', 'playsinline');
+      el.muted = false;
+    } else if (kind === 'audio') {
+      el = document.createElement('audio');
+      el.controls = true;
+      el.preload = 'metadata';
+    } else {
+      el = document.createElement('img');
+      el.alt = '';
+    }
+    el.onerror = function () {
+      log('media element failed to load for ' + m.key);
+      showMediaFallback(box, body, m);
+    };
+    box.appendChild(el);
+    el.src = url;
+  }
+
+  var bulkRendering = false;
+
+  /** Reactions are fetched only for the newest messages of a thread, throttled. */
+  function hydrateRecentReactions(list) {
+    var recent = (list || []).slice(-40);
+    recent.forEach(function (m) {
+      var node = m.key ? bubbleNodes[m.key] : null;
+      if (node && node.isConnected) { hydrateReactions(m, node); }
+    });
+  }
+
+  function hydrateReactions(m, wrap) {
+    if (!m || !wrap || /^tmp-/.test(m.key || '')) { return; }
+    if (!m.key || reactionDone[m.key]) { return; }
+    var api = chatApi();
+    if (!api || typeof api.getReactions !== 'function') { return; }
+    if (reactionBusy >= 4) { return; }
+    reactionDone[m.key] = true;
+    reactionBusy++;
+    Promise.resolve()
+      .then(function () { return api.getReactions(m.key); })
+      .then(function (res) { renderReactionChips(wrap, (res && res.reactions) || []); })
+      .catch(function (e) { log('getReactions failed: ' + e); })
+      .then(function () { reactionBusy--; });
+  }
+
+  function renderReactionChips(wrap, list) {
+    if (!wrap || !wrap.isConnected || !list || !list.length) { return; }
+    var old = wrap.querySelector('.wa-react-chips');
+    if (old && old.parentNode) { old.parentNode.removeChild(old); }
+    var box = document.createElement('div');
+    box.className = 'wa-react-chips';
+    list.slice(0, 6).forEach(function (r) {
+      if (!r) { return; }
+      var chip = document.createElement('span');
+      chip.className = 'wa-react-chip';
+      if (r.hasReactionByMe) { chip.setAttribute('data-mine', '1'); }
+      var n = (r.senders && r.senders.length) || 0;
+      var text = String(r.aggregateEmoji || '') + (n > 1 ? ' ' + n : '');
+      if (!text.trim()) { return; }
+      chip.textContent = text;
+      box.appendChild(chip);
+    });
+    if (!box.childNodes.length) { return; }
+    var meta = wrap.querySelector('.wa-bubble-meta');
+    if (meta && meta.parentNode === wrap) { wrap.insertBefore(box, meta); }
+    else { wrap.appendChild(box); }
   }
 
   function scrollToEnd() {
@@ -1646,12 +2377,20 @@
   function settlePending(cid, m) {
     if (!m.fromMe || !m.body) { return false; }
     var hit = matchPending(cid, m);
-    if (!hit) { return false; }
+    var pending = null;
+    var node = null;
 
-    var pending = hit.list[hit.i];
-    hit.list.splice(hit.i, 1);
+    if (hit) {
+      pending = hit.list[hit.i];
+      hit.list.splice(hit.i, 1);
+      node = pending && pending.node;
+    } else {
+      // Nothing in the send cache (the echo was re-keyed, or the cache expired):
+      // claim the optimistic bubble that is still on screen by matching its text,
+      // otherwise the engine copy would be drawn as a second, twin bubble.
+      node = findOrphanTmp(m.body, cid);
+    }
 
-    var node = pending.node;
     if (!node || !node.isConnected) {
       // The bubble is gone (the thread was re-rendered): let the caller draw it fresh.
       return false;
@@ -1668,6 +2407,18 @@
     }
     updateBubbleAck(node, typeof m.ack === 'number' ? m.ack : 0);
     return true;
+  }
+
+  /** Newest optimistic bubble in the open thread whose text equals `text`. */
+  function findOrphanTmp(text, cid) {
+    var msgsEl = $('messages');
+    if (!msgsEl || !text) { return null; }
+    var nodes = msgsEl.querySelectorAll('.wa-bubble[data-tmp="1"]');
+    for (var i = nodes.length - 1; i >= 0; i--) {
+      var body = nodes[i].querySelector('.wa-bubble-text');
+      if (body && body.textContent === text) { return nodes[i]; }
+    }
+    return null;
   }
 
   function onNewMessage(msg) {
@@ -1816,7 +2567,10 @@
         bottom.appendChild(prev);
         mid.appendChild(bottom);
         row.appendChild(mid);
-        row.addEventListener('click', function () { openChat(it.id, it.name, it.isGroup); });
+        row.addEventListener('click', function () {
+          if (forwardTarget) { finishForward(it.id); return; }
+          openChat(it.id, it.name, it.isGroup);
+        });
         frag.appendChild(row);
       });
       listEl.appendChild(frag);
@@ -1834,14 +2588,32 @@
   function openSheet(text, msg) {
     sheetText = String(text || '');
     sheetMsg = msg || null;
+    if (!sheetText.trim() && sheetMsg) { sheetText = msgText(sheetMsg); }
     if (!sheetText.trim()) { return; }
+    deleteArmedAt = 0;
     var preview = $('sheet-preview');
     if (preview) { preview.textContent = sheetText; }
+    // Only messages the engine already stored can be acted on.
+    var real = !!(sheetMsg && sheetMsg.key && !/^tmp-/.test(sheetMsg.key));
     var replyBtn = $('sheet-reply');
     if (replyBtn) {
-      // Only messages the engine already stored can be replied to.
-      replyBtn.hidden = !sheetMsg || !sheetMsg.key || /^tmp-/.test(sheetMsg.key);
+      // Channels are broadcast: you can react to their posts but never reply.
+      replyBtn.hidden = !real || isOpenChannel();
     }
+    var fwdBtn = $('sheet-forward');
+    if (fwdBtn) { fwdBtn.hidden = !real; }
+    var starBtn = $('sheet-star');
+    if (starBtn) {
+      starBtn.hidden = !real;
+      setLabel('sheet-star-label', (sheetMsg && sheetMsg.starred) ? 'Unstar' : 'Star');
+    }
+    var delBtn = $('sheet-delete');
+    if (delBtn) {
+      delBtn.hidden = !real;
+      setLabel('sheet-delete-label', 'Delete');
+    }
+    var reactRow = $('sheet-react');
+    if (reactRow) { reactRow.hidden = !real; }
     var scrim = $('sheet-scrim');
     var sheet = $('sheet');
     if (scrim) { scrim.hidden = false; }
@@ -1855,6 +2627,139 @@
     if (sheet) { sheet.hidden = true; }
     sheetText = '';
     sheetMsg = null;
+    deleteArmedAt = 0;
+  }
+
+  // ------------------------- message actions -------------------------
+
+  function reactToMessage(emoji) {
+    var m = sheetMsg;
+    var api = chatApi();
+    closeSheet();
+    if (!m || !m.key || /^tmp-/.test(m.key)) { return; }
+    if (!api || typeof api.sendReactionToMessage !== 'function') { return; }
+    Promise.resolve()
+      .then(function () { return api.sendReactionToMessage(m.key, emoji || ''); })
+      .then(function () {
+        toast('Reaction sent');
+        delete reactionDone[m.key];
+        var node = bubbleNodes[m.key];
+        if (node && node.isConnected) { hydrateReactions(m, node); }
+      })
+      .catch(function (e) {
+        log('reaction failed: ' + e);
+        toast('Could not react just now');
+      });
+  }
+
+  function startForward() {
+    var m = sheetMsg;
+    closeSheet();
+    if (!m || !m.key || /^tmp-/.test(m.key)) { return; }
+    forwardTarget = m.key;
+    showContacts();
+  }
+
+  function finishForward(chatId) {
+    var key = forwardTarget;
+    forwardTarget = null;
+    var api = chatApi();
+    if (!api || typeof api.forwardMessages !== 'function' || !key) {
+      returnFromContacts();
+      return;
+    }
+    toast('Forwarding…', 900);
+    Promise.resolve()
+      .then(function () { return api.forwardMessages(chatId, [key]); })
+      .then(function () { toast('Forwarded'); returnFromContacts(); })
+      .catch(function (e) {
+        log('forward failed: ' + e);
+        toast('Could not forward that message');
+        returnFromContacts();
+      });
+  }
+
+  /** Back out of the picker into the conversation (or list) we came from. */
+  function returnFromContacts() {
+    forwardTarget = null;
+    var open = openChatId ? chatById[openChatId] : null;
+    if (open) {
+      view = 'chat';
+      hideAllPanes();
+      if ($('chat-pane')) { $('chat-pane').hidden = false; }
+      showChatHeader(open);
+      setUiState('chat');
+      return;
+    }
+    showList();
+  }
+
+  function starToggle() {
+    var m = sheetMsg;
+    var api = chatApi();
+    closeSheet();
+    if (!m || !m.key || /^tmp-/.test(m.key)) { return; }
+    if (!api || typeof api.starMessage !== 'function') { return; }
+    var next = !m.starred;
+    Promise.resolve()
+      .then(function () { return api.starMessage(m.key, next); })
+      .then(function () {
+        m.starred = next;
+        var node = bubbleNodes[m.key];
+        if (node && node.isConnected) {
+          var meta = node.querySelector('.wa-bubble-meta');
+          var star = meta ? meta.querySelector('.wa-star') : null;
+          if (next && meta && !star) { meta.insertBefore(icon('star', 'wa-star'), meta.firstChild); }
+          else if (!next && star) { star.parentNode.removeChild(star); }
+        }
+        toast(next ? 'Starred' : 'Unstarred');
+      })
+      .catch(function (e) {
+        log('star failed: ' + e);
+        toast('Could not do that just now');
+      });
+  }
+
+  /** Two taps: the first arms the warning, the second deletes for everyone. */
+  function deleteMessageAction() {
+    var m = sheetMsg;
+    var api = chatApi();
+    if (!m || !m.key || /^tmp-/.test(m.key) || !api || typeof api.deleteMessage !== 'function') {
+      closeSheet();
+      return;
+    }
+    var now = Date.now();
+    if (now - deleteArmedAt > 4000) {
+      deleteArmedAt = now;
+      setLabel('sheet-delete-label', 'Tap again to delete');
+      return;
+    }
+    deleteArmedAt = 0;
+    var chatId = openChatId;
+    var key = m.key;
+    closeSheet();
+    Promise.resolve()
+      .then(function () { return api.deleteMessage(chatId, key, true); })
+      .then(function () { removeBubble(key); toast('Message deleted'); scheduleSoftRefresh(); })
+      .catch(function () {
+        // "Delete for everyone" is refused for older messages: delete it for me.
+        return Promise.resolve()
+          .then(function () { return api.deleteMessage(chatId, key, false); })
+          .then(function () { removeBubble(key); toast('Message deleted'); scheduleSoftRefresh(); })
+          .catch(function (e) {
+            log('delete failed: ' + e);
+            toast('Could not delete that message');
+          });
+      });
+  }
+
+  function removeBubble(key) {
+    var node = bubbleNodes[key];
+    if (node && node.parentNode) { node.parentNode.removeChild(node); }
+    delete bubbleNodes[key];
+    delete msgByKey[key];
+    delete seenMsgKeys[key];
+    delete reactionDone[key];
   }
 
   function fallbackCopy(text) {
@@ -1937,7 +2842,7 @@
 
     function openActions() {
       var t = m.body || m.text || '';
-      if (t) { openSheet(t, m); }
+      if (t || m.key) { openSheet(t, m); }
     }
 
     el.addEventListener('pointerdown', function (e) {
@@ -2091,17 +2996,25 @@
           id: id,
           name: contactNameOf(id),
           me: !!(mine && userOf(id) === userOf(mine)),
-          msgs: fresh.slice(0, 20)
+          // Keep the 20 newest, then play them oldest -> newest like WhatsApp does.
+          msgs: fresh.slice(0, 20).reverse()
         });
       } catch (e2) { log('status entry failed: ' + e2); }
     });
     return out;
   }
 
+  /** Newest status of an entry - msgs are ordered oldest -> newest for playback. */
+  function latestStatusMsg(entry) {
+    var msgs = entry && entry.msgs;
+    if (!msgs || !msgs.length) { return {}; }
+    return msgs[msgs.length - 1] || {};
+  }
+
   function sortStatusEntries(list) {
     list.sort(function (a, b) {
       if (a.me !== b.me) { return a.me ? -1 : 1; }
-      return statusTimeMs(b.msgs[0]) - statusTimeMs(a.msgs[0]);
+      return statusTimeMs(latestStatusMsg(b)) - statusTimeMs(latestStatusMsg(a));
     });
     return list;
   }
@@ -2121,8 +3034,7 @@
       updateStatusRow();
       return Promise.resolve([]);
     }
-    return Promise.resolve()
-      .then(function () { return api.getMessages('status@broadcast', { count: 60 }); })
+    return Promise.resolve()        .then(function () { return api.getMessages('status@broadcast', { count: 120 }); })
       .then(function (raw) {
         var byAuthor = Object.create(null);
         asMessageArray(raw).forEach(function (m) {
@@ -2139,7 +3051,7 @@
             id: a,
             name: contactNameOf(a),
             me: !!(mine && userOf(a) === userOf(mine)),
-            msgs: byAuthor[a].slice(0, 20)
+            msgs: byAuthor[a].slice(0, 20).reverse()
           };
         });
         statusData = sortStatusEntries(out);
@@ -2195,7 +3107,7 @@
     }
     var frag = document.createDocumentFragment();
     statusData.forEach(function (entry, gi) {
-      var latest = entry.msgs[0] || {};
+      var latest = latestStatusMsg(entry);
       var seen = !!statusSeen[entry.id];
       var row = document.createElement('button');
       row.type = 'button';
@@ -2321,6 +3233,8 @@
 
   function renderStatusViewer() {
     stopViewerTimer();
+    viewerState.seq = (viewerState.seq || 0) + 1;
+    var seq = viewerState.seq;
     var entry = viewerState.entries[viewerState.gi];
     if (!entry || !entry.msgs || !entry.msgs.length || viewerState.mi >= entry.msgs.length) {
       closeStatusViewer();
@@ -2365,27 +3279,50 @@
     if (stage) {
       stage.textContent = '';
       stage.__key = idStr(msg.id) || ('st-' + viewerState.gi + '-' + viewerState.mi);
-      renderStatusBody(msg, stage);
+      renderStatusBody(msg, stage, seq);
     }
 
     statusSeen[entry.id] = true;
     markStatusRead(entry, msg);
 
     viewerState.running = true;
-    viewerState.timer = setTimeout(function () {
-      viewerState.timer = null;
-      nextStatusItem();
-    }, viewerState.dur);
+    // Text advances on its own; media waits until it is actually on screen so a
+    // slow download cannot skip a photo the user never got to see.
+    var wantsMedia = /image|video|gif|sticker|ptt|audio|document|media/i.test(String(msg.type || '')) ||
+      (!msg.body && !!(msg.mediaData || msg.mediaKey));
+    if (!wantsMedia) { armViewerTimer(viewerState.dur, seq, null); }
   }
 
-  function renderStatusBody(msg, stage) {
+  /** Starts the auto-advance for the current story, if it is still the current one. */
+  function armViewerTimer(ms, seq, mediaEl) {
+    if (seq !== viewerState.seq || !viewerState.running) { return; }
+    stopViewerTimer();
+    if (mediaEl && mediaEl.addEventListener) {
+      var done = false;
+      var advance = function () {
+        if (done) { return; }
+        done = true;
+        try { mediaEl.removeEventListener('ended', advance); } catch (e) {}
+        if (seq === viewerState.seq && viewerState.running) { nextStatusItem(); }
+      };
+      mediaEl.addEventListener('ended', advance);
+      return;
+    }
+    viewerState.timer = setTimeout(function () {
+      viewerState.timer = null;
+      if (seq !== viewerState.seq) { return; }
+      nextStatusItem();
+    }, ms);
+  }
+
+  function renderStatusBody(msg, stage, seq) {
     var body = String(msg.body || msg.caption || '');
     var type = String(msg.type || '');
     var wantsMedia = /image|video|gif|sticker|ptt|audio|document|media/i.test(type) ||
       (!body && !!(msg.mediaData || msg.mediaKey));
 
     if (wantsMedia) {
-      showStatusMedia(msg, stage, body);
+      showStatusMedia(msg, stage, body, seq);
       return;
     }
     if (body) {
@@ -2393,18 +3330,40 @@
       t.className = 'wa-viewer-text';
       t.textContent = body;
       stage.appendChild(t);
+      armViewerTimer(viewerState.dur, seq, null);
       return;
     }
     var note = document.createElement('div');
     note.className = 'wa-viewer-note';
     note.textContent = 'This status cannot be shown here.\nOpen WhatsApp Web to view it.';
     stage.appendChild(note);
+    armViewerTimer(viewerState.dur, seq, null);
   }
 
-  function showStatusMedia(msg, stage, caption) {
+  /** Fallback object URL when the full download is refused but a preview is cached. */
+  function previewUrlOf(msg) {
+    try {
+      var md = msg && msg.mediaData;
+      var pv = md && md.preview;
+      if (!pv || typeof Blob === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) {
+        return null;
+      }
+      var blob = null;
+      var mime = md.mimetype || 'image/jpeg';
+      if (pv instanceof Blob) { blob = pv; }
+      else if (pv.blob instanceof Blob) { blob = pv.blob; }
+      else if (pv.buffer) { blob = new Blob([pv.buffer], { type: mime }); }
+      else if (ArrayBuffer.isView(pv)) { blob = new Blob([pv], { type: mime }); }
+      else if (pv instanceof ArrayBuffer) { blob = new Blob([pv], { type: mime }); }
+      if (!blob) { return null; }
+      return URL.createObjectURL(blob);
+    } catch (e) { return null; }
+  }
+
+  function showStatusMedia(msg, stage, caption, seq) {
     var key = idStr(msg.id) || '';
     var ownKey = stage.__key;
-    var current = function () { return stage.__key === ownKey; };
+    var current = function () { return stage.__key === ownKey && seq === viewerState.seq; };
 
     function note(text) {
       if (!current()) { return; }
@@ -2413,6 +3372,7 @@
       n.className = 'wa-viewer-note';
       n.textContent = text;
       stage.appendChild(n);
+      armViewerTimer(viewerState.dur, seq, null);
     }
 
     function mount(url) {
@@ -2420,6 +3380,7 @@
       stage.textContent = '';
       var mime = String((msg.mimetype || (msg.mediaData && msg.mediaData.mimetype) || '') + '');
       var isVideo = /^video\//.test(mime) || /video/i.test(String(msg.type || ''));
+      var isAudio = /^audio\//.test(mime) || /ptt|audio/i.test(String(msg.type || ''));
       var el;
       if (isVideo) {
         el = document.createElement('video');
@@ -2427,20 +3388,36 @@
         el.muted = true;
         el.playsInline = true;
         el.setAttribute('controls', 'controls');
+        el.setAttribute('playsinline', 'playsinline');
       } else {
         el = document.createElement('img');
       }
-      el.src = url;
       el.onerror = function () {
+        var alt = previewUrlOf(msg);
+        if (alt && alt !== url) { mount(alt); return; }
         note((caption ? caption + '\n\n' : '') + 'Media unavailable. Open WhatsApp Web to view it.');
       };
       stage.appendChild(el);
+      el.src = url;
       if (caption) {
         var c = document.createElement('div');
         c.className = 'wa-viewer-note';
         c.textContent = caption;
         stage.appendChild(c);
       }
+      // Photos and text run on a timer; video and audio advance when they finish.
+      if (isVideo || isAudio) { armViewerTimer(viewerState.dur, seq, el); }
+      else { armViewerTimer(viewerState.dur, seq, null); }
+    }
+
+    function fail() {
+      var alt = current() ? previewUrlOf(msg) : null;
+      if (alt) {
+        if (key) { statusMedia[key] = alt; }
+        mount(alt);
+        return;
+      }
+      note('Media unavailable. Open WhatsApp Web to view it.');
     }
 
     if (key && statusMedia[key]) {
@@ -2449,26 +3426,28 @@
     }
     var api = chatApi();
     if (!api || typeof api.downloadMedia !== 'function' || !key) {
-      note('Media unavailable. Open WhatsApp Web to view it.');
+      fail();
       return;
     }
-    var spinner = document.createElement('div');
-    spinner.className = 'wa-viewer-note';
-    spinner.textContent = 'Loading status…';
-    stage.appendChild(spinner);
+    if (current()) {
+      var spinner = document.createElement('div');
+      spinner.className = 'wa-viewer-note';
+      spinner.textContent = 'Loading status…';
+      stage.appendChild(spinner);
+    }
 
     Promise.resolve()
       .then(function () { return api.downloadMedia(key); })
       .then(function (blob) {
-        if (!blob) { note('Media unavailable. Open WhatsApp Web to view it.'); return; }
+        if (!blob) { fail(); return; }
         var url;
         try { url = URL.createObjectURL(blob); } catch (e) { url = null; }
-        if (!url) { note('Media unavailable. Open WhatsApp Web to view it.'); return; }
+        if (!url) { fail(); return; }
         statusMedia[key] = url;
         mount(url);
       })
       .catch(function () {
-        note('Media unavailable. Open WhatsApp Web to view it.');
+        fail();
       });
   }
 
@@ -2610,10 +3589,63 @@
       });
   }
 
+  function renderChannelInfo(c, body) {
+    var hero = document.createElement('div');
+    hero.className = 'wa-info-hero';
+    hero.appendChild(channelTile('wa-avatar-lg'));
+    var nm = document.createElement('div');
+    nm.className = 'wa-info-name';
+    nm.textContent = c.name;
+    hero.appendChild(nm);
+    var sub = document.createElement('div');
+    sub.className = 'wa-info-sub';
+    var members = c.members || 0;
+    sub.textContent = 'Channel' + (members ? ' · ' + members + ' followers' : '');
+    hero.appendChild(sub);
+    body.appendChild(hero);
+
+    if (c.desc) {
+      var about = infoRow('Description', c.desc);
+      body.appendChild(about.block);
+    }
+    var status = infoRow('You', c.following ? 'Following' : 'Not following');
+    body.appendChild(status.block);
+
+    var actions = document.createElement('div');
+    actions.className = 'wa-info-actions';
+    var follow = document.createElement('button');
+    follow.type = 'button';
+    follow.className = 'wa-chanbtn';
+    follow.textContent = c.following ? 'Unfollow' : 'Follow channel';
+    follow.addEventListener('click', function () {
+      toggleChannelFollow(c.id);
+      setTimeout(function () {
+        var row = status.value;
+        var live = channelById[c.id];
+        if (row && live) { row.textContent = live.following ? 'Following' : 'Not following'; }
+        if (follow && channelById[c.id]) {
+          follow.textContent = channelById[c.id].following ? 'Unfollow' : 'Follow channel';
+        }
+      }, 600);
+    });
+    actions.appendChild(follow);
+    body.appendChild(actions);
+
+    var back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'wa-retry';
+    back.style.display = 'block';
+    back.style.margin = '16px auto 4px';
+    back.textContent = 'Back to channel';
+    back.addEventListener('click', function () { backFromInfo(); });
+    body.appendChild(back);
+  }
+
   function renderInfo(c) {
     var body = $('info-body');
     if (!body || !c) { return; }
     body.textContent = '';
+    if (c.isChannel) { renderChannelInfo(c, body); return; }
 
     var hero = document.createElement('div');
     hero.className = 'wa-info-hero';
@@ -2692,10 +3724,16 @@
     if (viewer && !viewer.hidden) { closeStatusViewer(); return true; }
     var sheet = $('sheet');
     if (sheet && !sheet.hidden) { closeSheet(); return true; }
+    var rowSheet = $('rowsheet');
+    if (rowSheet && !rowSheet.hidden) { closeRowSheet(); return true; }
     var menu = $('menu');
     if (menu && !menu.hidden) { closeMenu(); return true; }
     if (view === 'info') { return backFromInfo(); }
-    if (view === 'contacts' || view === 'settings' || view === 'status') { showList(); return true; }
+    if (view === 'contacts') { returnFromContacts(); return true; }
+    if (view === 'settings' || view === 'status' || view === 'channels' || view === 'archived') {
+      showList();
+      return true;
+    }
     if (view === 'chat') { closeChat(); return true; }
     return false;
   }
@@ -2715,6 +3753,11 @@
         loadStatuses();
         return;
       }
+      if (view === 'channels') {
+        toast('Refreshing…', 900);
+        loadChannels();
+        return;
+      }
       // No engine at all -> reload the page instead of refreshing an empty list.
       if (!chatApi()) {
         toast('Reloading WhatsApp…', 1200);
@@ -2729,15 +3772,56 @@
     on($('btn-menu'), openMenu);
     on($('btn-info'), function () { if (view === 'chat') { showInfo(); } });
     on($('btn-status'), showStatus);
+    on($('btn-channels'), showChannels);
 
     // menu sheet
     on($('menu-scrim'), closeMenu);
     on($('menu-close'), closeMenu);
     on($('menu-status'), function () { closeMenu(); showStatus(); });
     on($('menu-newchat'), function () { closeMenu(); showContacts(); });
+    on($('menu-channels'), function () { closeMenu(); showChannels(); });
     on($('menu-settings'), function () { closeMenu(); showSettings(); });
     on($('menu-official'), function () { closeMenu(); openOfficialUi(); });
     on($('btn-official'), openOfficialUi);
+
+    // channel action bar
+    on($('ch-follow'), function () { toggleChannelFollow(); });
+    on($('ch-mute'), function () { toggleChannelMute(); });
+
+    var chanInput = $('chan-search');
+    if (chanInput && chanInput.addEventListener) {
+      chanInput.addEventListener('input', function (e) {
+        chanQuery = (e.target && e.target.value) || '';
+        var clear = $('btn-chan-search-close');
+        if (clear) { clear.hidden = !chanQuery; }
+        renderChannels();
+      });
+    }
+    on($('btn-chan-search-close'), function () {
+      chanQuery = '';
+      if ($('chan-search')) { $('chan-search').value = ''; }
+      if ($('btn-chan-search-close')) { $('btn-chan-search-close').hidden = true; }
+      renderChannels();
+    });
+
+    // message actions
+    on($('sheet-forward'), startForward);
+    on($('sheet-star'), starToggle);
+    on($('sheet-delete'), deleteMessageAction);
+    Array.prototype.forEach.call(
+      document.querySelectorAll('#sheet-react .wa-react-emoji'),
+      function (btn) {
+        on(btn, function () { reactToMessage(btn.getAttribute('data-emoji') || ''); });
+      }
+    );
+
+    // chat row actions
+    on($('rowsheet-scrim'), closeRowSheet);
+    on($('row-cancel'), closeRowSheet);
+    on($('row-pin'), function () { chatAction('pin'); });
+    on($('row-archive'), function () { chatAction('archive'); });
+    on($('row-mute'), function () { chatAction('mute'); });
+    on($('row-unread'), markUnread);
 
     // reply
     on($('btn-reply-cancel'), clearReply);
@@ -2817,6 +3901,19 @@
       input.addEventListener('focus', function () {
         setTimeout(scrollToEnd, 260);
       });
+      // Show the engine's "typing…" state in the other person's chat, like WhatsApp.
+      input.addEventListener('input', function () {
+        if (view !== 'chat' || !openChatId || isOpenChannel()) { return; }
+        var api = chatApi();
+        if (!api || typeof api.markIsComposing !== 'function') { return; }
+        var now = Date.now();
+        if (now - typingSentAt < 8000) { return; }
+        typingSentAt = now;
+        var id = openChatId;
+        Promise.resolve()
+          .then(function () { return api.markIsComposing(id); })
+          .catch(function () {});
+      });
     }
 
     var msgs = $('messages');
@@ -2882,7 +3979,7 @@
         return;
       }
       subscribe();
-      loadChats().then(function () { loadStatuses(); });
+      loadChats().then(function () { loadStatuses(); loadChannels(); });
     })();
   }
 
@@ -2901,6 +3998,7 @@
     if (chatApi()) {
       loadChats();
       loadStatuses();
+      loadChannels();
     }
     return true;
   }
@@ -2928,6 +4026,7 @@
       }
       loadChats();
       loadStatuses();
+      loadChannels();
       return true;
     },
     openOfficial: function () { return openOfficialUi(); }
