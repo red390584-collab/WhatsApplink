@@ -48,6 +48,10 @@ class MainActivity : Activity() {
 
         private val PAIRING_CODE_REGEX = Regex("^[A-Z0-9]{4}-[A-Z0-9]{4}$")
 
+        /** Survives process death so the pairing-code banner can be restored instantly. */
+        private const val PREFS = "hybrid_state"
+        private const val KEY_PAIRING_CODE = "pairing_code"
+
         /**
          * Linking monitor, evaluated inside the WhatsApp page.
          *
@@ -229,6 +233,10 @@ class MainActivity : Activity() {
     } catch (e) {}
   }
 
+  // Exposed so Kotlin can force an immediate check the moment the user comes back
+  // from the WhatsApp app (background tabs heavily throttle setInterval).
+  window.__wvmonCheck = check;
+
   setInterval(function () { hookWpp(); check(); }, 1500);
   hookWpp();
   check();
@@ -243,6 +251,7 @@ class MainActivity : Activity() {
     }
 
     private lateinit var webView: WebView
+    private lateinit var prefs: android.content.SharedPreferences
     private lateinit var codeBanner: TextView
     private lateinit var errorView: TextView
     private lateinit var backToApp: TextView
@@ -260,6 +269,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         webView = findViewById(R.id.webView)
         codeBanner = findViewById(R.id.codeBanner)
         errorView = findViewById(R.id.errorView)
@@ -278,6 +288,20 @@ class MainActivity : Activity() {
             val code = lastPairingCode ?: return@setOnClickListener
             copyToClipboard(code, getString(R.string.pairing_code_copied))
         }
+
+        // If the process was reclaimed while the user was away, show the pairing code
+        // again right away instead of a blank screen - the monitor re-confirms (and
+        // replaces) it from the page within a couple of seconds.
+        val restored = prefs.getString(KEY_PAIRING_CODE, null)
+        if (restored != null && PAIRING_CODE_REGEX.matches(restored)) {
+            lastPairingCode = restored
+            codeBanner.text = getString(R.string.pairing_code_banner, restored)
+            codeBanner.visibility = View.VISIBLE
+        }
+
+        // Foreground keep-alive: without it Android kills this WebView process within
+        // seconds of the user switching to the WhatsApp app to enter the code.
+        KeepAliveService.start(this)
 
         errorView.setOnClickListener {
             errorView.visibility = View.GONE
@@ -402,6 +426,8 @@ class MainActivity : Activity() {
         if (isFinishing || isDestroyed) return
         uiState = "list"
         codeBanner.visibility = View.GONE
+        // Linked: a stale pairing code must never come back after a process restart.
+        prefs.edit().remove(KEY_PAIRING_CODE).apply()
 
         val html = cachedHtml ?: readAsset("custom-ui.html").also { cachedHtml = it }
         val css = cachedCss ?: readAsset("custom-ui.css").also { cachedCss = it }
@@ -531,6 +557,7 @@ class MainActivity : Activity() {
                 officialMode = false
                 backToApp.visibility = View.GONE
                 lastPairingCode = null
+                prefs.edit().remove(KEY_PAIRING_CODE).apply()
                 codeBanner.visibility = View.GONE
                 removeCustomUi()
                 webView.loadUrl(HOME_URL)
@@ -544,6 +571,7 @@ class MainActivity : Activity() {
             if (!PAIRING_CODE_REGEX.matches(normalized)) return
             runOnUiThread {
                 lastPairingCode = normalized
+                prefs.edit().putString(KEY_PAIRING_CODE, normalized).apply()
                 if (codeBanner.visibility == View.VISIBLE &&
                     codeBanner.text.toString().contains(normalized)
                 ) return@runOnUiThread
@@ -703,6 +731,26 @@ class MainActivity : Activity() {
         return super.onKeyDown(keyCode, event)
     }
 
+    /**
+     * The user came back from the WhatsApp app. Do not reload anything - the live
+     * page is still there - just force an immediate link check, because background
+     * tabs throttle setInterval hard and the pairing may have completed while away.
+     */
+    override fun onResume() {
+        super.onResume()
+        // Re-arm the keep-alive every time we come to the front: it is idempotent, and
+        // it covers the platform eventually timing out a dataSync service.
+        KeepAliveService.start(this)
+        try {
+            webView.evaluateJavascript(
+                "(function () { try { if (window.__wvmonCheck) { window.__wvmonCheck(); } } catch (e) {} })();",
+                null
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "resume check failed", e)
+        }
+    }
+
     override fun onPause() {
         super.onPause()
         CookieManager.getInstance().flush()
@@ -714,6 +762,11 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        // Only release the keep-alive when the app is really going away (swiped from
+        // recents / finished) - not on a configuration change.
+        if (isFinishing) {
+            KeepAliveService.stop(this)
+        }
         try {
             webView.destroy()
         } catch (e: Exception) {

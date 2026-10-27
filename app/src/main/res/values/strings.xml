@@ -4,5 +4,8 @@
     <string name="pairing_code_copied">Pairing code copied</string>
     <string name="text_copied">Copied to clipboard</string>
     <string name="back_to_chats">← Back to chats</string>
+    <string name="keepalive_channel">Session</string>
+    <string name="keepalive_title">WhatsApp Hybrid is running</string>
+    <string name="keepalive_text">Keeping your linking session and chats alive in the background</string>
     <string name="load_error">Could not open WhatsApp Web.\n\nCheck your connection, then tap here to try again.</string>
 </resources>

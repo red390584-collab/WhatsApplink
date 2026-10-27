@@ -59,10 +59,24 @@ through `WPP.chat.sendTextMessage()` and are retried against the `@c.us`/`@lid`
 counterpart and `WPP.chat.find()` before a bubble is ever marked "Not sent" (with the
 engine's own error text), so a failed send can no longer look successful.
 
+## Staying alive while you link
+
+The whole app is one long-lived WebView, which Android is happy to kill within seconds
+of the user switching away - and the first thing you do when linking by phone number is
+switch to WhatsApp to type the code. So `KeepAliveService` runs as a silent foreground
+service (`dataSync` type, `START_STICKY`) from the moment the app opens, lifting the
+process to a perceptible priority so the page, its pairing code and the linked session
+all survive the trip to WhatsApp and back. The pairing code is additionally persisted to
+`SharedPreferences` and restored on `onCreate`, so even a genuine process reclaim comes
+back to the code banner instead of a blank screen; coming back to the app never reloads
+the page, it only forces an immediate link check (`window.__wvmonCheck`) so a pairing
+that completed in the background is picked up instantly.
+
 ## Project layout
 
 ```
 app/src/main/java/com/hybrid/webchat/MainActivity.kt   # WebView + persistence + injection
+app/src/main/java/com/hybrid/webchat/KeepAliveService.kt # foreground keep-alive service
 app/src/main/assets/wppconnect-wa.js                   # WPPConnect wa-js 4.7.2 (vendored UMD bundle)
 app/src/main/assets/custom-ui.html                     # injected mobile chat UI markup
 app/src/main/assets/custom-ui.css                      # injected WhatsApp-style theme
